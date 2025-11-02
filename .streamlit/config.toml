@@ -1,0 +1,6 @@
+[server]
+maxUploadSize = 1024            # 1 GB örnek
+fileWatcherType = "poll"        # Windows için stabil (opsiyonel)
+
+
+
