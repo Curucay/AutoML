@@ -1,0 +1,15 @@
+# Python/JetBrains/OS
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.idea/
+.DS_Store
+Thumbs.db
+
+# (İsteğe bağlı büyük veri)
+data/
+models/
+*.parquet
+*.csv
