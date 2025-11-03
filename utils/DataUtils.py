@@ -55,34 +55,35 @@ class DataUtils:
             datetime_guess: bool = True,
             coerce_threshold: float = 0.8,
             normalize_tz_to_naive_utc: bool = False,
+            protected_cols: list[str] | None = None,  # <<< YENİ
+            protect_id_like_names: bool = True,  # <<< YENİ
     ) -> pd.DataFrame:
-        """
-        - object sütunlarını datetime/numeric'e olabildiğince çevirir.
-        - tz'li datetime'ları (opsiyonel) UTC-naive'e indirger.
-        """
         out = df.copy()
-
         if not datetime_guess:
             return out
+
+        # id benzeri kolon isimleri (heuristic)
+        id_like = {"id", "key", "user_id", "customer_id", "kod", "code"}
+        protected = set((protected_cols or []))
+        if protect_id_like_names:
+            for c in out.columns:
+                if str(c).strip().lower() in id_like:
+                    protected.add(c)
 
         for col in out.columns:
             s = out[col]
 
-            # Sadece object tipleri üzerinde otomatik tahmin yap
-            if s.dtype == "object":
-                # 1) Datetime dene (coerce ile; başarılı oranı threshold'u geçerse kabul et)
-                dt_parsed = pd.to_datetime(
-                    s, errors="coerce", infer_datetime_format=True, utc=True
-                )
-                dt_ratio = dt_parsed.notna().mean()
+            # Korumalı kolonları hiç ellemeyelim
+            if col in protected:
+                continue
 
-                if dt_ratio >= coerce_threshold:
-                    # İstenirse tz'yi tamamen kaldır (UTC-naive)
+            if s.dtype == "object":
+                dt_parsed = pd.to_datetime(s, errors="coerce", infer_datetime_format=True, utc=True)
+                if dt_parsed.notna().mean() >= coerce_threshold:
                     if normalize_tz_to_naive_utc:
                         try:
                             dt_parsed = dt_parsed.dt.tz_convert("UTC").dt.tz_localize(None)
                         except Exception:
-                            # zaten UTC ise veya çevrilemezse sessizce geç
                             try:
                                 dt_parsed = dt_parsed.dt.tz_localize(None)
                             except Exception:
@@ -90,14 +91,12 @@ class DataUtils:
                     out[col] = dt_parsed
                     continue
 
-                # 2) Numeric dene (opsiyonel): çok metinli alanlarda gerekmez ama faydalı olabilir
                 num_parsed = pd.to_numeric(s, errors="coerce")
-                num_ratio = num_parsed.notna().mean()
-                if num_ratio >= coerce_threshold:
+                if num_parsed.notna().mean() >= coerce_threshold:
                     out[col] = num_parsed
                     continue
 
-            # Zaten datetime ise (tz’li veya tz’siz), isteğe bağlı normalize et
+            # varolan dt’leri normalize et (opsiyonel)
             if is_datetime64_any_dtype(s) or is_datetime64tz_dtype(s):
                 if normalize_tz_to_naive_utc and is_datetime64tz_dtype(s):
                     try:
@@ -145,35 +144,61 @@ class DataUtils:
         return [c for c, _ in scored[:max_candidates]]
 
     @staticmethod
-    def align_dtypes_for_merge(df_left: pd.DataFrame, df_right: pd.DataFrame, on: list[str]):
+    def align_dtypes_for_merge(
+            df_left: pd.DataFrame,
+            df_right: pd.DataFrame,
+            on: list[str],
+            key_cast: str | dict[str, str] = "auto",
+            # 'auto' | 'string' | 'numeric' | 'datetime' | {'col':'string',...}
+    ):
         L, R = df_left.copy(), df_right.copy()
-        for c in on:
-            if c not in L.columns or c not in R.columns:
-                continue
-            sL, sR = L[c], R[c]
-            # Her iki taraf datetime'a çevrilebilir mi?
+
+        def _cast_pair(col: str, mode: str):
+            sL, sR = L[col], R[col]
+            m = (mode or "auto").lower()
+            if m == "string":
+                L[col] = sL.astype("string");
+                R[col] = sR.astype("string");
+                return
+            if m == "numeric":
+                L[col] = pd.to_numeric(sL, errors="coerce");
+                R[col] = pd.to_numeric(sR, errors="coerce");
+                return
+            if m == "datetime":
+                L[col] = pd.to_datetime(sL, errors="coerce", utc=True)
+                R[col] = pd.to_datetime(sR, errors="coerce", utc=True);
+                return
+
+            # auto: önce dt, sonra numeric, aksi halde string ortak payda
             try:
                 dL = pd.to_datetime(sL, errors="coerce", utc=True)
                 dR = pd.to_datetime(sR, errors="coerce", utc=True)
                 if dL.notna().mean() > 0.8 and dR.notna().mean() > 0.8:
-                    L[c] = dL;
-                    R[c] = dR
-                    continue
+                    L[col] = dL;
+                    R[col] = dR;
+                    return
             except Exception:
                 pass
-            # Numerik mi?
             try:
                 nL = pd.to_numeric(sL, errors="coerce");
                 nR = pd.to_numeric(sR, errors="coerce")
                 if nL.notna().mean() > 0.8 and nR.notna().mean() > 0.8:
-                    L[c] = nL;
-                    R[c] = nR
-                    continue
+                    L[col] = nL;
+                    R[col] = nR;
+                    return
             except Exception:
                 pass
-            # Ortak payda: string
-            L[c] = sL.astype("string")
-            R[c] = sR.astype("string")
+            L[col] = sL.astype("string");
+            R[col] = sR.astype("string")
+
+        for c in on:
+            if c not in L.columns or c not in R.columns:
+                continue
+            if isinstance(key_cast, dict):
+                _cast_pair(c, key_cast.get(c, "auto"))
+            else:
+                _cast_pair(c, key_cast)
+
         return L, R
 
     @staticmethod
@@ -182,11 +207,12 @@ class DataUtils:
             df_right: pd.DataFrame,
             on: list[str],
             how: str = "inner",
-            suffixes: tuple[str, str] = ("_x", "_y")
+            suffixes: tuple[str, str] = ("_x", "_y"),
+            key_cast: str | dict[str, str] = "auto",  # <<< YENİ
     ) -> pd.DataFrame:
         if not on:
             raise ValueError("Merge için en az bir 'on' anahtarı seçin.")
-        L, R = DataUtils.align_dtypes_for_merge(df_left, df_right, on)
+        L, R = DataUtils.align_dtypes_for_merge(df_left, df_right, on, key_cast=key_cast)
         return pd.merge(L, R, on=on, how=how, suffixes=suffixes)
 
     @staticmethod
