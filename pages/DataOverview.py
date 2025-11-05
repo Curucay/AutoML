@@ -6,8 +6,15 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import plotly.express as px
 
 from utils.DataUtils import DataUtils
+from utils.VizUtils import VizUtils
+
+try:
+    _IS_DARK = (st.get_option("theme.base") == "dark")
+except Exception:
+    _IS_DARK = False
 
 @st.cache_data(show_spinner=False)
 def cache_profile(_df: pd.DataFrame, dataset_name: str):
@@ -70,113 +77,6 @@ class DataOverview:
         datasets = st.session_state[self.SESSION_KEY_DATASETS]
         meta = st.session_state[self.SESSION_KEY_DATASETS_META]
 
-        # === Veri Birleştirme (beta) ===
-        with st.expander("🧩 Veri Birleştirme", expanded=False):
-            op = st.radio("Birleştirme türü", ["Satır birleştirme (concat)", "Anahtarla birleştirme (merge)"],
-                          horizontal=False)
-
-            # Kısa referanslar
-            datasets = st.session_state[DataOverview.SESSION_KEY_DATASETS]
-            meta = st.session_state[DataOverview.SESSION_KEY_DATASETS_META]
-            ds_names = list(datasets.keys())
-
-            # ---------------- Concat ----------------
-            if op.startswith("Satır"):
-                pick = st.multiselect("Birleştirilecek veri setleri (en az 2)", options=ds_names)
-                col_mode = st.radio("Sütun hizalama", ["union (tüm sütunlar)", "intersection (ortak sütunlar)"],
-                                    horizontal=True, index=0)
-                add_src = st.checkbox("Kaynak adı etiketi ekle (__source__)", value=False)
-                target_name = st.text_input("Yeni veri seti adı", value="merged_concat")
-
-                do_concat = st.button("Birleştir ve Kaydet", type="primary", use_container_width=True)
-                if do_concat:
-                    if not pick or len(pick) < 2:
-                        st.error("En az iki veri seti seçin.")
-                    else:
-                        dfs = [datasets[nm] for nm in pick]
-                        mode = "union" if col_mode.startswith("union") else "intersection"
-                        out = DataUtils.concat_safe(dfs, column_mode=mode, add_source_label=add_src, source_names=pick)
-                        # kayıt
-                        datasets[target_name] = out
-                        meta[target_name] = {"size_bytes": 0}  # sentetik set → boyut bilinmiyor
-                        st.cache_data.clear()
-                        st.session_state[DataOverview.SESSION_KEY_NAME] = target_name
-                        st.success(f"✔ {target_name} oluşturuldu · {out.shape[0]:,} satır × {out.shape[1]:,} sütun")
-                        st.rerun()
-
-            # ---------------- Merge ----------------
-            else:
-                c1, c2 = st.columns(2)
-                with c1:
-                    left_ds = st.selectbox("Left (sol) veri seti", options=ds_names, key="__merge_left")
-                with c2:
-                    right_ds = st.selectbox("Right (sağ) veri seti",
-                                            options=[n for n in ds_names if n != st.session_state.get("__merge_left")],
-                                            key="__merge_right")
-                if left_ds and right_ds:
-                    L, R = datasets[left_ds], datasets[right_ds]
-                    # anahtar önerileri
-                    suggest = DataUtils.suggest_join_keys(L, R, max_candidates=5)
-                    st.caption(f"Anahtar önerileri: {', '.join(suggest) if suggest else '—'}")
-                    # kullanıcı seçimi
-                    commons = [c for c in L.columns if c in R.columns]
-                    on_cols = st.multiselect("Join anahtar(lar)ı", options=commons, default=suggest)
-                    how = st.selectbox("Join türü", options=["inner", "left", "right", "outer"],
-                                       index=1)  # default left
-                    sfx1 = st.text_input("Sol sonek", value="_x")
-                    sfx2 = st.text_input("Sağ sonek", value="_y")
-                    target_name = st.text_input("Yeni veri seti adı", value="merged_join")
-
-                    # --- YENİ: Anahtar tipi stratejisi ---
-                    st.markdown("**Anahtar tipi**")
-                    key_mode = st.radio(
-                        "Anahtar tipini nasıl ele alalım?",
-                        options=["Otomatik", "String", "Numeric", "Datetime", "Kolon bazlı"],
-                        horizontal=True,
-                        index=1  # güvenli varsayılan: String
-                    )
-
-                    key_cast_arg = "auto"
-                    per_key_cast = {}
-                    if key_mode == "Otomatik":
-                        key_cast_arg = "auto"
-                    elif key_mode == "String":
-                        key_cast_arg = "string"
-                    elif key_mode == "Numeric":
-                        key_cast_arg = "numeric"
-                    elif key_mode == "Datetime":
-                        key_cast_arg = "datetime"
-                    else:
-                        st.caption("Kolon bazlı tip ataması:")
-                        for k in on_cols:
-                            per_key_cast[k] = st.selectbox(
-                                f"• {k}",
-                                options=["auto", "string", "numeric", "datetime"],
-                                index=1,  # default: string
-                                key=f"__key_cast_{k}"
-                            )
-                        key_cast_arg = per_key_cast
-
-                    do_merge = st.button("Birleştir ve Kaydet", type="primary", use_container_width=True)
-                    if do_merge:
-                        try:
-                            out = DataUtils.merge_safe(
-                                L, R,
-                                on=on_cols,
-                                how=how,
-                                suffixes=(sfx1, sfx2),
-                                key_cast=key_cast_arg       # <<< kritik ek
-                            )
-                        except Exception as e:
-                            st.error(f"Birleştirme hatası: {e}")
-                        else:
-                            datasets[target_name] = out
-                            meta[target_name] = {"size_bytes": 0}  # sentetik set
-                            st.cache_data.clear()
-                            st.session_state[DataOverview.SESSION_KEY_NAME] = target_name
-                            st.success(f"✔ {target_name} oluşturuldu · {out.shape[0]:,} satır × {out.shape[1]:,} sütun")
-                            st.rerun()
-
         if clear:
             datasets.clear()
             st.session_state.pop(self.SESSION_KEY_NAME, None)
@@ -207,6 +107,101 @@ class DataOverview:
         if not datasets:
             st.info("Bir veya daha fazla veri dosyası yüklediğinizde burada listelenecek.")
             return
+
+        # === 🧩 Veri Birleştirme ===
+        with st.expander("🧩 Veri Birleştirme (Join/Merge)", expanded=False):
+            datasets = st.session_state[DataOverview.SESSION_KEY_DATASETS]
+            ds_names = list(datasets.keys())
+            if len(ds_names) < 2:
+                st.info("Birleştirme için en az iki veri seti yükleyin.")
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    left_ds = st.selectbox("Left (sol) veri seti", options=ds_names, key="__merge_left")
+                with c2:
+                    right_ds = st.selectbox(
+                        "Right (sağ) veri seti",
+                        options=[n for n in ds_names if n != st.session_state.get("__merge_left")],
+                        key="__merge_right"
+                    )
+
+                if left_ds and right_ds:
+                    L, R = datasets[left_ds], datasets[right_ds]
+
+                    st.markdown("### 1) Anahtar Kolonları Seç")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        left_cols = st.multiselect(
+                            f"{left_ds} anahtar(lar)ı (sıra eşleşir)",
+                            options=list(L.columns),
+                            key="__left_keys"
+                        )
+                    with cc2:
+                        right_cols = st.multiselect(
+                            f"{right_ds} anahtar(lar)ı (sıra eşleşir)",
+                            options=list(R.columns),
+                            key="__right_keys"
+                        )
+
+                    # Eşleşme yardımcı notu
+                    if left_cols and right_cols:
+                        if len(left_cols) != len(right_cols):
+                            st.warning("Sol ve sağ anahtar sayıları eşit olmalı. Sıra, eşleşmeyi belirler.")
+                        else:
+                            pairs = list(zip(left_cols, right_cols))
+                            st.caption("Eşleşmeler: " + ", ".join([f"{l} ⇄ {r}" for l, r in pairs]))
+
+                    st.markdown("### 2) Anahtar Tipi (Çift Bazlı)")
+                    key_cast_seq = []
+                    if left_cols and right_cols and len(left_cols) == len(right_cols):
+                        for i, (lcol, rcol) in enumerate(zip(left_cols, right_cols), start=1):
+                            sel = st.selectbox(
+                                f"#{i} {lcol} ⇄ {rcol} tipi",
+                                options=["string", "numeric", "datetime", "auto"],
+                                index=0,  # güvenli varsayılan: string
+                                key=f"__pair_cast_{i}"
+                            )
+                            key_cast_seq.append(sel)
+
+                    st.markdown("### 3) Join Türü ve Sonekler")
+                    c3, c4, c5 = st.columns([1, 1, 2])
+                    with c3:
+                        how = st.selectbox("Join türü", options=["inner", "left", "right", "outer"], index=1)
+                    with c4:
+                        sfx1 = st.text_input("Sol sonek", value="_x")
+                    with c5:
+                        sfx2 = st.text_input("Sağ sonek", value="_y")
+
+                    target_name = st.text_input("Yeni veri seti adı", value="merged_join")
+
+                    do_merge = st.button("Birleştir ve Kaydet", type="primary", use_container_width=True)
+                    if do_merge:
+                        if not left_cols or not right_cols:
+                            st.error("Her iki taraftan da anahtar kolon(lar)ı seçin.")
+                        elif len(left_cols) != len(right_cols):
+                            st.error("Sol ve sağ anahtar sayıları eşit olmalı.")
+                        else:
+                            try:
+                                out = DataUtils.merge_safe_lr(
+                                    L, R,
+                                    left_on=left_cols,
+                                    right_on=right_cols,
+                                    how=how,
+                                    suffixes=(sfx1, sfx2),
+                                    key_cast_seq=key_cast_seq if key_cast_seq else None
+                                )
+                            except Exception as e:
+                                st.error(f"Birleştirme hatası: {e}")
+                            else:
+                                datasets[target_name] = out
+                                st.session_state[DataOverview.SESSION_KEY_DATASETS_META][target_name] = {
+                                    "size_bytes": 0}
+                                st.cache_data.clear()
+                                st.session_state[DataOverview.SESSION_KEY_NAME] = target_name
+                                st.success(
+                                    f"✔ {target_name} oluşturuldu · {out.shape[0]:,} satır × {out.shape[1]:,} sütun")
+                                st.rerun()
+
 
         # Varsayılan olarak ilk anahtar seçili olsun
         default_name = st.session_state.get(self.SESSION_KEY_NAME) or list(datasets.keys())[0]
@@ -253,6 +248,177 @@ class DataOverview:
         st.subheader("Örnek Kayıtlar")
         st.dataframe(prof.sample.head(int(sample_n)), use_container_width=True, height=400)
 
+        # ---------------------------------------------------------------------------
+        # === Variables (tek değişken odaklı kart) ===================================
+        st.markdown("## Variables")
+
+        col_sel, col_blank = st.columns([2, 1])
+        with col_sel:
+            var_col = st.selectbox("Select Columns", options=list(df.columns), key="__vars_sel")
+
+        with st.container(border=True):
+            if var_col:
+                vp = DataUtils.variable_profile(df, var_col, bins=40)
+
+                # Başlık
+                st.markdown(f"### <span style='color:#2B6CB0'>{var_col}</span>", unsafe_allow_html=True)
+
+                # Tür etiketi
+                s = df[var_col]
+                if pd.api.types.is_integer_dtype(s):
+                    dtype_label = "Integer (I)"
+                elif pd.api.types.is_float_dtype(s):
+                    dtype_label = "Real number (R)"
+                elif pd.api.types.is_datetime64_any_dtype(s):
+                    dtype_label = "Datetime (D)"
+                else:
+                    dtype_label = "Categorical (C)"
+
+                # Özet bilgileri
+                n = vp["n"]
+                non_null = int(n - vp["missing"])
+                st.caption(
+                    f"{dtype_label}"
+                )
+
+                # Üst metrik kartı: iki tablo + sağda mini histogram
+                g1, g2, g3 = st.columns([1.2, 1.2, 1.4])
+
+                # Sol tablo (Distinct/Missing/Infinite/Mean)
+                with g1:
+                    left_rows = {
+                        "Distinct": f"{vp['distinct']:,}",
+                        "Distinct (%)": f"{vp['distinct_pct']:.1f}%",
+                        "Missing": f"{vp['missing']:,}",
+                        "Missing (%)": f"{vp['missing_pct']:.1f}%",
+                        "Infinite": "0",
+                        "Infinite (%)": "0.0%",
+                        "Mean": ("—" if vp["mean"] is None else f"{vp['mean']:.6g}"),
+                    }
+                    # infinite varsa sayısal seriden hesapla
+                    s_tmp = pd.to_numeric(df[var_col], errors="coerce")
+                    if pd.api.types.is_numeric_dtype(df[var_col]):
+                        inf_cnt = int(np.isinf(s_tmp).sum())
+                        left_rows["Infinite"] = f"{inf_cnt}"
+                        left_rows["Infinite (%)"] = f"{(inf_cnt / max(1, vp['n'])) * 100:.1f}%"
+
+                    left_df = pd.DataFrame({
+                        "metric": list(left_rows.keys()),
+                        "value": list(left_rows.values())
+                    })
+                    st.dataframe(
+                        left_df,
+                        use_container_width=True,
+                        height=280,
+                        hide_index=True
+                    )
+
+                # Orta tablo (Min/Max/Zeros/Negative/Memory size)
+                with g2:
+                    right_rows = {
+                        "Minimum": ("—" if vp["min"] is None else f"{vp['min']}"),
+                        "Maximum": ("—" if vp["max"] is None else f"{vp['max']}"),
+                        "Zeros": ("—" if vp["zeros"] is None else f"{vp['zeros']:,}"),
+                        "Zeros (%)": ("—" if vp["zeros_pct"] is None else f"{vp['zeros_pct']:.1f}%"),
+                        "Negative": ("—" if vp["neg"] is None else f"{vp['neg']:,}"),
+                        "Negative (%)": ("—" if vp["neg_pct"] is None else f"{vp['neg_pct']:.1f}%"),
+                        "Memory size": f"{vp['mem_mb']:.2f} MiB",
+                    }
+                    right_df = pd.DataFrame({
+                        "metric": list(right_rows.keys()),
+                        "value": list(right_rows.values())
+                    })
+                    st.dataframe(
+                        right_df,
+                        use_container_width=True,
+                        height=280,
+                        hide_index=True
+                    )
+
+                # Sağ: mini histogram - kategorik dağılım
+                with g3:
+                    s_this = df[var_col]
+
+                    if pd.api.types.is_numeric_dtype(s_this) and vp.get("hist") is not None and vp.get(
+                            "hist_edges") is not None:
+                        # Numerik → küçük histogram (Plotly)
+                        fig = VizUtils.pretty_histogram(df[var_col], bins=60, title="Histogram", height=260,
+                                                        dark=_IS_DARK)
+                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    elif (pd.api.types.is_object_dtype(s_this) or pd.api.types.is_categorical_dtype(s_this) or s_this.dtype == "string"):
+                        fig = VizUtils.top_categories_bar(df, var_col, top=6, height=260, title="Top categories",
+                                                          dark=_IS_DARK)
+                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    elif pd.api.types.is_datetime64_any_dtype(s_this):
+                        fig = VizUtils.time_count_bar(df[var_col], freq="D", height=260, title="Daily counts",
+                                                      dark=_IS_DARK)
+                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    else:
+                        st.caption("Bu değişken için grafik uygun değil.")
+
+                # Alt sekmeler: Statistics / Histogram / Common
+                tab1, tab2, tab3 = st.tabs(["Statistics", "Histogram", "Common values"])
+
+                with tab1:
+                    s = df[var_col]
+                    if pd.api.types.is_numeric_dtype(s):
+                        qdf = DataUtils.variable_quantile_table(s)  # DataUtils tarafı hazır
+                        ddf = DataUtils.variable_descriptive_table(s)
+
+                        t1, t2 = st.columns(2)
+                        with t1:
+                            st.subheader("Quantile statistics")
+                            st.dataframe(qdf, use_container_width=True, height=360, hide_index=True)
+                        with t2:
+                            st.subheader("Descriptive statistics")
+                            st.dataframe(ddf, use_container_width=True, height=360, hide_index=True)
+                    else:
+                        st.info("Sayısal olmayan sütun için bu sekme sınırlıdır.")
+
+                with tab2:
+                    bins = st.slider("Histogram bins", 5, 120, 40, step=5, key="__vars_bins")
+                    if pd.api.types.is_numeric_dtype(df[var_col]):
+                        fig = VizUtils.pretty_histogram(
+                            df[var_col], bins=int(bins), title=f"{var_col} · Histogram",
+                            height=320, dark=_IS_DARK
+                        )
+                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    elif pd.api.types.is_datetime64_any_dtype(df[var_col]):
+                        fig = VizUtils.time_count_bar(
+                            df[var_col], freq="D", height=320,
+                            title=f"{var_col} · Daily counts", dark=_IS_DARK
+                        )
+                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    else:
+                        fig = VizUtils.top_categories_bar(
+                            df, var_col, top=30, height=320, title="Top values", dark=_IS_DARK
+                        )
+                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+                with tab3:
+                    top = st.slider("Top-N", 5, 50, 20, step=5, key="__vars_top")
+                    cv = DataUtils.variable_common_values(df, var_col, top=top)
+
+                    st.dataframe(
+                        cv,
+                        use_container_width=True,
+                        height=min(500, 30 * (len(cv) + 2)),
+                        hide_index=True,
+                        column_config={
+                            "value": "Value",
+                            "count": "Count",
+                            "freq_pct": st.column_config.ProgressColumn(
+                                "Frequency (%)",
+                                help="Value frequency as percentage of total",
+                                format="%.1f%%",
+                                min_value=0,
+                                max_value=100,
+                            ),
+                        },
+                    )
+
+        # ---------------------------------------------------------------------------
+
         # === 🧪 Değişken Odaklı Analiz (Pro) ===
         st.markdown("## 🧪 Değişken Odaklı Analiz")
 
@@ -288,41 +454,21 @@ class DataOverview:
             # === 1) Tek değişken görselleştirme ===
             st.markdown("### Tek Değişken Dağılımı")
             if is_num:
-                fig, ax = plt.subplots(figsize=(6.0, 3.5))
-                ax.hist(pd.to_numeric(s, errors="coerce").dropna(), bins=bins_u)
-                ax.set_title(f"{feature} Histogram")
-                ax.set_xlabel(feature); ax.set_ylabel("Frekans"); ax.grid(alpha=0.2)
-                st.pyplot(fig, clear_figure=True)
-
-                fig, ax = plt.subplots(figsize=(6.0, 1.8))
-                ax.boxplot(pd.to_numeric(s, errors="coerce").dropna(), vert=False, patch_artist=False, widths=0.5)
-                ax.set_title(f"{feature} Boxplot"); ax.set_xlabel(feature); ax.grid(axis="x", alpha=0.2)
-                st.pyplot(fig, clear_figure=True)
-
+                fig = VizUtils.pretty_histogram(s, bins=int(bins_u), title=f"{feature} · Histogram",
+                                                height=320, dark=_IS_DARK)
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 st.dataframe(pd.DataFrame(pd.to_numeric(s, errors="coerce").describe()).T,
-                             use_container_width=True, height=120)
-
+                             use_container_width=True, height=120, hide_index=True)
             elif is_cat:
-                vc = s.astype("string").fillna("NA").value_counts(dropna=False).head(top_n)
+                vc = s.astype("string").fillna("NA").value_counts(dropna=False)
                 if not vc.empty:
-                    fig, ax = plt.subplots(figsize=(6.0, 3.5))
-                    vc.plot(kind="bar", ax=ax)
-                    ax.set_title(f"{feature} · en sık {min(top_n, vc.shape[0])} kategori")
-                    ax.set_xlabel(feature); ax.set_ylabel("Frekans")
-                    ax.tick_params(axis="x", labelrotation=45); ax.grid(axis="y", alpha=0.2)
-                    st.pyplot(fig, clear_figure=True)
-                st.dataframe(vc.to_frame("count"), use_container_width=True,
-                             height=min(360, 24 * min(top_n, max(1, vc.shape[0])) + 40))
-
+                    tmp = pd.DataFrame({feature: s})
+                    fig = VizUtils.top_categories_bar(tmp, feature, top=int(top_n), height=320,
+                                                      title=f"{feature} · Top-{min(top_n, vc.shape[0])}")
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             elif is_dt:
-                s_dt = pd.to_datetime(s, errors="coerce")
-                grp = s_dt.dropna().dt.to_period("D").value_counts().sort_index()
-                if not grp.empty:
-                    fig, ax = plt.subplots(figsize=(6.0, 3.5))
-                    ax.plot(grp.index.to_timestamp(), grp.values, marker=".", linewidth=1)
-                    ax.set_title(f"{feature} Zaman Dağılımı (Günlük adet)")
-                    ax.set_xlabel("Tarih"); ax.set_ylabel("Adet"); ax.grid(alpha=0.2)
-                    st.pyplot(fig, clear_figure=True)
+                fig = VizUtils.time_count_bar(s, freq="D", height=320, title=f"{feature} · Daily counts")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
             # === 2) İlişkisel analiz (opsiyonel hedef seçilirse) ===
             if target_opt and target_opt != "(yok)" and target_opt != feature:
@@ -449,11 +595,9 @@ class DataOverview:
                 st.subheader("Hedef Dağılımı")
                 s = pd.to_numeric(tgt_series, errors="coerce").dropna()
                 if not s.empty:
-                    fig, ax = plt.subplots(figsize=(6.0, 3.5))
-                    ax.hist(s, bins=bins_t, density=False)
-                    ax.set_title(f"Histogram · {target_col}")
-                    ax.set_xlabel(target_col); ax.set_ylabel("Frekans"); ax.grid(alpha=0.2)
-                    st.pyplot(fig, clear_figure=True)
+                    fig = VizUtils.pretty_histogram(s, bins=int(bins_t), title=f"{target_col} · Histogram",
+                                                    height=320, dark=_IS_DARK)
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 else:
                     st.info("Hedef sayısal değerler üretmedi.")
 
@@ -513,14 +657,13 @@ class DataOverview:
                     st.info("Kategorik-kategorik ilişki analizi için uygun veri bulunamadı.")
 
                 st.subheader("Sınıf Dağılımı")
-                vc = tgt_series.astype("string").fillna("NA").value_counts(dropna=False)
-                if not vc.empty:
-                    fig, ax = plt.subplots(figsize=(6.0, 3.5))
-                    vc.head(top_cats).plot(kind="bar", ax=ax)
-                    ax.set_title(f"{target_col} · en sık {min(top_cats, vc.shape[0])} sınıf")
-                    ax.set_xlabel(target_col); ax.set_ylabel("Frekans")
-                    ax.tick_params(axis="x", labelrotation=45); ax.grid(axis="y", alpha=0.2)
-                    st.pyplot(fig, clear_figure=True)
+                if not tgt_series.empty:
+                    tmp_df = pd.DataFrame({target_col: tgt_series})
+                    fig = VizUtils.top_categories_bar(
+                        tmp_df, target_col, top=int(top_cats), height=320,
+                        title=f"{target_col} · Top-{top_cats} classes", dark=_IS_DARK
+                    )
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 prof_c = DataUtils.target_profile_categorical(tgt_series)
                 st.dataframe(prof_c["value_counts"], use_container_width=True,
                              height=min(360, 24 * min(top_cats, vc.shape[0]) + 80))

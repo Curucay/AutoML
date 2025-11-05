@@ -6,14 +6,13 @@ import io
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 import matplotlib.pyplot as plt
 from pandas.api.types import (
     is_numeric_dtype,
     is_datetime64_any_dtype,
     is_datetime64tz_dtype,
 )
-
-SUPPORTED_EXTS = (".csv", ".xlsx", ".xls", ".parquet")
 
 @dataclass
 class DataProfile:
@@ -118,132 +117,83 @@ class DataUtils:
         return True, "OK"
 
     @staticmethod
-    def suggest_join_keys(df_left: pd.DataFrame, df_right: pd.DataFrame, max_candidates: int = 5):
-        """
-        Ortak kolon adlarına bakıp, non-null oranı ve benzersiz oranı yüksek olanları önerir.
-        """
-        commons = [c for c in df_left.columns if c in df_right.columns]
-        if not commons:
-            return []
-        # Heuristik: yüksek doluluk, çok az/çok fazla benzersiz olmayan kolonları ele
-        scored = []
-        for c in commons:
-            sL, sR = df_left[c], df_right[c]
-            fill_rate = (1 - sL.isna().mean()) * (1 - sR.isna().mean())
-            try:
-                nunL = sL.nunique(dropna=True);
-                nunR = sR.nunique(dropna=True)
-                uniq_score = 1.0 - abs((nunL / max(len(sL), 1)) - (nunR / max(len(sR), 1)))
-            except Exception:
-                uniq_score = 0.5
-            # isim bazlı “id/key” bonusu
-            name_bonus = 0.15 if str(c).lower() in {"id", "key", "user_id", "customer_id", "kod", "code"} else 0.0
-            score = 0.6 * fill_rate + 0.4 * uniq_score + name_bonus
-            scored.append((c, score))
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [c for c, _ in scored[:max_candidates]]
+    def _cast_series_pair(sL: pd.Series, sR: pd.Series, mode: str) -> tuple[pd.Series, pd.Series]:
+        m = (mode or "auto").lower()
+        if m == "string":
+            return sL.astype("string"), sR.astype("string")
+        if m == "numeric":
+            return pd.to_numeric(sL, errors="coerce"), pd.to_numeric(sR, errors="coerce")
+        if m == "datetime":
+            return pd.to_datetime(sL, errors="coerce", utc=True), pd.to_datetime(sR, errors="coerce", utc=True)
+
+        # auto: önce datetime, sonra numeric, değilse string
+        try:
+            dL = pd.to_datetime(sL, errors="coerce", utc=True)
+            dR = pd.to_datetime(sR, errors="coerce", utc=True)
+            if dL.notna().mean() > 0.8 and dR.notna().mean() > 0.8:
+                return dL, dR
+        except Exception:
+            pass
+        try:
+            nL = pd.to_numeric(sL, errors="coerce")
+            nR = pd.to_numeric(sR, errors="coerce")
+            if nL.notna().mean() > 0.8 and nR.notna().mean() > 0.8:
+                return nL, nR
+        except Exception:
+            pass
+        return sL.astype("string"), sR.astype("string")
 
     @staticmethod
-    def align_dtypes_for_merge(
+    def align_dtypes_for_merge_lr(
             df_left: pd.DataFrame,
             df_right: pd.DataFrame,
-            on: list[str],
-            key_cast: str | dict[str, str] = "auto",
-            # 'auto' | 'string' | 'numeric' | 'datetime' | {'col':'string',...}
-    ):
+            left_on: list[str],
+            right_on: list[str],
+            key_cast_seq: list[str] | None = None,  # her eşleşme için: 'auto'|'string'|'numeric'|'datetime'
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        if len(left_on) != len(right_on):
+            raise ValueError("left_on ve right_on uzunlukları eşit olmalı.")
         L, R = df_left.copy(), df_right.copy()
+        if key_cast_seq is None:
+            key_cast_seq = ["auto"] * len(left_on)
+        if len(key_cast_seq) != len(left_on):
+            raise ValueError("key_cast_seq uzunluğu anahtar sayısıyla eşit olmalı.")
 
-        def _cast_pair(col: str, mode: str):
-            sL, sR = L[col], R[col]
-            m = (mode or "auto").lower()
-            if m == "string":
-                L[col] = sL.astype("string");
-                R[col] = sR.astype("string");
-                return
-            if m == "numeric":
-                L[col] = pd.to_numeric(sL, errors="coerce");
-                R[col] = pd.to_numeric(sR, errors="coerce");
-                return
-            if m == "datetime":
-                L[col] = pd.to_datetime(sL, errors="coerce", utc=True)
-                R[col] = pd.to_datetime(sR, errors="coerce", utc=True);
-                return
-
-            # auto: önce dt, sonra numeric, aksi halde string ortak payda
-            try:
-                dL = pd.to_datetime(sL, errors="coerce", utc=True)
-                dR = pd.to_datetime(sR, errors="coerce", utc=True)
-                if dL.notna().mean() > 0.8 and dR.notna().mean() > 0.8:
-                    L[col] = dL;
-                    R[col] = dR;
-                    return
-            except Exception:
-                pass
-            try:
-                nL = pd.to_numeric(sL, errors="coerce");
-                nR = pd.to_numeric(sR, errors="coerce")
-                if nL.notna().mean() > 0.8 and nR.notna().mean() > 0.8:
-                    L[col] = nL;
-                    R[col] = nR;
-                    return
-            except Exception:
-                pass
-            L[col] = sL.astype("string");
-            R[col] = sR.astype("string")
-
-        for c in on:
-            if c not in L.columns or c not in R.columns:
+        for (lc, rc, mode) in zip(left_on, right_on, key_cast_seq):
+            if lc not in L.columns or rc not in R.columns:
+                # eksik kolon varsa string’e çevirip yine de ilerleyelim
+                if lc in L.columns:
+                    L[lc] = L[lc].astype("string")
+                if rc in R.columns:
+                    R[rc] = R[rc].astype("string")
                 continue
-            if isinstance(key_cast, dict):
-                _cast_pair(c, key_cast.get(c, "auto"))
-            else:
-                _cast_pair(c, key_cast)
-
+            sL, sR = L[lc], R[rc]
+            cL, cR = DataUtils._cast_series_pair(sL, sR, mode)
+            L[lc], R[rc] = cL, cR
         return L, R
 
     @staticmethod
-    def merge_safe(
+    def merge_safe_lr(
             df_left: pd.DataFrame,
             df_right: pd.DataFrame,
-            on: list[str],
+            left_on: list[str],
+            right_on: list[str],
             how: str = "inner",
             suffixes: tuple[str, str] = ("_x", "_y"),
-            key_cast: str | dict[str, str] = "auto",  # <<< YENİ
+            key_cast_seq: list[str] | None = None,
     ) -> pd.DataFrame:
-        if not on:
-            raise ValueError("Merge için en az bir 'on' anahtarı seçin.")
-        L, R = DataUtils.align_dtypes_for_merge(df_left, df_right, on, key_cast=key_cast)
-        return pd.merge(L, R, on=on, how=how, suffixes=suffixes)
+        """
+        Farklı isimli anahtar kolonları eşleştirerek güvenli merge.
+        - left_on / right_on: eşleşen kolon listeleri (aynı sıradaki elemanlar eşleştirilir)
+        - key_cast_seq: her eşleşme için tip stratejisi ('auto'|'string'|'numeric'|'datetime')
+        """
+        if not left_on or not right_on:
+            raise ValueError("left_on / right_on boş olamaz.")
+        if len(left_on) != len(right_on):
+            raise ValueError("left_on ve right_on uzunlukları eşit olmalı.")
 
-    @staticmethod
-    def concat_safe(
-            dfs: list[pd.DataFrame],
-            column_mode: str = "union",  # 'union' (outer) | 'intersection' (inner)
-            add_source_label: bool = False,
-            source_names: list[str] | None = None
-    ) -> pd.DataFrame:
-        if not dfs:
-            return pd.DataFrame()
-        if column_mode not in {"union", "intersection"}:
-            raise ValueError("column_mode 'union' veya 'intersection' olmalı.")
-        if column_mode == "intersection":
-            common = set(dfs[0].columns)
-            for d in dfs[1:]:
-                common &= set(d.columns)
-            dfs = [d[list(common)].copy() for d in dfs]
-            join = "inner"
-        else:
-            join = "outer"
-        if add_source_label:
-            if source_names is None or len(source_names) != len(dfs):
-                source_names = [f"src_{i + 1}" for i in range(len(dfs))]
-            out = []
-            for d, nm in zip(dfs, source_names):
-                dd = d.copy()
-                dd["__source__"] = nm
-                out.append(dd)
-            return pd.concat(out, axis=0, join=join, ignore_index=True)
-        return pd.concat(dfs, axis=0, join=join, ignore_index=True)
+        L, R = DataUtils.align_dtypes_for_merge_lr(df_left, df_right, left_on, right_on, key_cast_seq)
+        return pd.merge(L, R, left_on=left_on, right_on=right_on, how=how, suffixes=suffixes)
 
     @staticmethod
     def _bytes_to_mb(nbytes: int) -> float:
@@ -274,117 +224,9 @@ class DataUtils:
         )
 
     @staticmethod
-    def quick_stats(df: pd.DataFrame, cols: Optional[List[str]] = None) -> pd.DataFrame:
-        target = df[cols] if cols else df.select_dtypes(include=[np.number])
-        return target.describe(include="all").T
-
-    @staticmethod
     def value_counts_frame(df: pd.DataFrame, col: str, top: int = 20) -> pd.DataFrame:
         vc = df[col].astype("object").value_counts(dropna=False).head(top)
         return vc.rename_axis(col).reset_index(name="count")
-
-    @staticmethod
-    def _hist_numeric(
-            df: pd.DataFrame,
-            cols: Optional[list[str]] = None,
-            bins: int = 40,
-            density: bool = False,
-            max_cols: int = 12,
-            fig_size: tuple[float, float] = (6.0, 3.5)
-    ) -> None:
-        nums = df.select_dtypes(include=[np.number]).columns.tolist() if cols is None else list(cols)
-        if not nums:
-            st.info("Histogram için numerik sütun bulunamadı.")
-            return
-        nums = nums[:max_cols]  # gereksiz kalabalığı engelle
-
-        st.markdown("### Sayısal Dağılımlar (Histogram)")
-        for col in nums:
-            s = df[col].dropna()
-            if s.empty:
-                continue
-            # tür güvenliği
-            if not np.issubdtype(s.dtype, np.number):
-                try:
-                    s = s.astype(float)
-                except Exception:
-                    continue
-            fig, ax = plt.subplots(figsize=fig_size)
-            ax.hist(s, bins=bins, density=density)
-            ax.set_title(f"{col}")
-            ax.set_xlabel(col)
-            ax.set_ylabel("Yoğunluk" if density else "Frekans")
-            ax.grid(alpha=0.2)
-            st.pyplot(fig, clear_figure=True)
-
-    @staticmethod
-    def _bar_categorical(
-            df: pd.DataFrame,
-            cols: Optional[list[str]] = None,
-            top: int = 20,
-            max_cols: int = 12,
-            fig_size: tuple[float, float] = (6.0, 3.5)
-    ) -> None:
-        cats_all = df.select_dtypes(include=["object", "category"]).columns.tolist()
-        cats = cats_all if cols is None else list(cols)
-        cats = [c for c in cats if c in cats_all][:max_cols]
-
-        if not cats:
-            st.info("Kategorik sütun bulunamadı.")
-            return
-
-        st.markdown("### Kategorik Dağılımlar (Top-N)")
-        for col in cats:
-            vc = df[col].astype("string").fillna("NA").value_counts(dropna=False).head(top)
-            if vc.empty:
-                continue
-            fig, ax = plt.subplots(figsize=fig_size)
-            vc.plot(kind="bar", ax=ax)
-            ax.set_title(f"{col} · en sık {top}")
-            ax.set_xlabel(col)
-            ax.set_ylabel("Frekans")
-            ax.tick_params(axis='x', labelrotation=45)
-            ax.grid(axis='y', alpha=0.2)
-            st.pyplot(fig, clear_figure=True)
-
-    @staticmethod
-    def _corr_heatmap(
-            df: pd.DataFrame,
-            method: str = "pearson",
-            max_cols: int = 25
-    ) -> None:
-        num_df = df.select_dtypes(include=[np.number])
-        if num_df.shape[1] < 2:
-            st.info("Korelasyon için en az iki numerik sütun gerekli.")
-            return
-
-        # Çok geniş matrislerde kolon sınırı (varyansa göre en bilgililer)
-        variances = num_df.var(numeric_only=True).sort_values(ascending=False)
-        cols = list(variances.dropna().index[:max_cols])
-        corr_df = num_df[cols].corr(method=method, numeric_only=True)
-
-        st.markdown(f"### Korelasyon Isı Haritası ({method})")
-        if corr_df.empty:
-            st.info("Korelasyon hesaplanamadı.")
-            return
-
-        # Boyutları, kolon sayısına göre küçük tut
-        w = min(10.0, 0.55 * len(cols) + 2.0)
-        h = min(8.0, 0.55 * len(cols) + 1.5)
-
-        fig, ax = plt.subplots(figsize=(w, h))
-        im = ax.imshow(corr_df.values, interpolation="nearest", aspect="auto")
-        ax.set_xticks(range(len(cols)))
-        ax.set_yticks(range(len(cols)))
-        ax.set_xticklabels(cols, rotation=90, fontsize=8)
-        ax.set_yticklabels(cols, fontsize=8)
-        fig.colorbar(im, ax=ax, shrink=0.85)
-        ax.grid(False)
-        fig.tight_layout()
-        st.pyplot(fig, clear_figure=True)
-
-        # Tabloyu da görmek istersen:
-        st.dataframe(corr_df, use_container_width=True, height=min(320, 24 * len(cols) + 80))
 
     @staticmethod
     def _datetime_overview(df: pd.DataFrame, max_cols: int = 8) -> None:
@@ -571,13 +413,152 @@ class DataUtils:
         res = pd.DataFrame(scores, columns=["feature", "anova_like", "n_categories"])
         return res.sort_values("anova_like", ascending=False).reset_index(drop=True)
 
+    # --- Tek kolon profili (Variables paneli için) -------------------------------
     @staticmethod
-    def normalized_contingency(df: pd.DataFrame, feat: str, target_col: str) -> pd.DataFrame:
-        tbl = pd.crosstab(
-            df[feat].astype("string").fillna("NA"),
-            df[target_col].astype("string").fillna("NA")
-        )
-        if tbl.empty:
-            return tbl
-        row_pct = tbl.div(tbl.sum(axis=1).replace(0, np.nan), axis=0)
-        return row_pct.fillna(0.0)
+    def variable_profile(df: pd.DataFrame, col: str, bins: int = 40) -> dict:
+        s = df[col]
+        n = int(s.shape[0])
+        dtype = str(s.dtype)
+        mem_mb = float(s.memory_usage(deep=True)) / (1024 ** 2)
+
+        # ortak metrikler
+        missing = int(s.isna().sum())
+        missing_pct = float(missing) / max(n, 1) * 100.0
+        distinct = int(s.nunique(dropna=True))
+        distinct_pct = float(distinct) / max(n, 1) * 100.0
+
+        out = {
+            "dtype": dtype,
+            "n": n,
+            "missing": missing,
+            "missing_pct": round(missing_pct, 4),
+            "distinct": distinct,
+            "distinct_pct": round(distinct_pct, 4),
+            "mem_mb": round(mem_mb, 3),
+            "min": None, "max": None, "mean": None, "std": None,
+            "zeros": None, "zeros_pct": None,
+            "neg": None, "neg_pct": None,
+            "hist": None, "hist_edges": None
+        }
+
+        # numerik ise ek metrikler
+        if pd.api.types.is_numeric_dtype(s):
+            x = pd.to_numeric(s, errors="coerce")
+            out["min"] = None if x.dropna().empty else float(x.min())
+            out["max"] = None if x.dropna().empty else float(x.max())
+            out["mean"] = None if x.dropna().empty else float(x.mean())
+            out["std"] = None if x.dropna().empty else float(x.std(ddof=1))
+
+            zeros = int((x == 0).sum(skipna=True))
+            neg = int((x < 0).sum(skipna=True))
+            out["zeros"] = zeros
+            out["neg"] = neg
+            out["zeros_pct"] = float(zeros) / max(n, 1) * 100.0
+            out["neg_pct"] = float(neg) / max(n, 1) * 100.0
+
+            # histogram verisi (küçük grafik için)
+            h, edges = np.histogram(x.dropna(), bins=bins)
+            out["hist"], out["hist_edges"] = h.tolist(), edges.tolist()
+
+        # datetime ise min / max
+        elif pd.api.types.is_datetime64_any_dtype(s):
+            sd = pd.to_datetime(s, errors="coerce")
+            if not sd.dropna().empty:
+                out["min"] = sd.min()
+                out["max"] = sd.max()
+
+        return out
+
+    @staticmethod
+    def variable_common_values(df: pd.DataFrame, col: str, top: int = 20) -> pd.DataFrame:
+        """
+        Kolondaki değerlerin tekrar sayısını ve yüzde frekansını döndürür.
+        En sonda 'Other values' satırında kalan tüm değerler toplanır.
+        """
+        s = df[col].astype("string").fillna("NA")
+        total = int(s.shape[0])
+
+        # En sık 'top' değer
+        vc = s.value_counts(dropna=False)  # Series (value -> count)
+        top_vc = vc.head(top)
+
+        # Others
+        others_count = int(vc.iloc[top:].sum()) if vc.shape[0] > top else 0
+
+        # Tablo
+        out = top_vc.rename_axis("value").reset_index(name="count")
+        out["freq_pct"] = (out["count"] / max(1, total)) * 100.0
+
+        # 'Other values' satırını ekle
+        if others_count > 0:
+            out.loc[len(out)] = ["Other values", others_count, (others_count / max(1, total)) * 100.0]
+
+        # Türleri netleştir
+        out["count"] = out["count"].astype(int)
+        out["freq_pct"] = out["freq_pct"].astype(float)
+
+        return out
+
+    # --- Tek kolon için tablo hazır istatistikler (Variables/Statistics sekmesi) ---
+    @staticmethod
+    def variable_quantile_table(s: pd.Series) -> pd.DataFrame:
+        """Sayısal seriler için quantile özet tablosu."""
+        s = pd.to_numeric(s, errors="coerce")
+        q = {
+            "Minimum": s.min(),
+            "5-th percentile": s.quantile(0.05),
+            "Q1": s.quantile(0.25),
+            "median": s.median(),
+            "Q3": s.quantile(0.75),
+            "95-th percentile": s.quantile(0.95),
+            "Maximum": s.max(),
+        }
+        q["Range"] = q["Maximum"] - q["Minimum"]
+        q["Interquartile range (IQR)"] = q["Q3"] - q["Q1"]
+        df = pd.DataFrame({"value": q}).reset_index().rename(columns={"index": ""})
+        return df
+
+    @staticmethod
+    def variable_descriptive_table(s: pd.Series) -> pd.DataFrame:
+        """Sayısal seriler için tanımlayıcı istatistik tablosu."""
+        s = pd.to_numeric(s, errors="coerce")
+        std = s.std(ddof=1)
+        mean = s.mean()
+        desc = {
+            "Standard deviation": std,
+            "Coefficient of variation (CV)": (std / mean) if pd.notna(std) and pd.notna(mean) and mean != 0 else np.nan,
+            "Kurtosis": s.kurtosis(),
+            "Mean": mean,
+            "Median Absolute Deviation (MAD)": (s.mad() if hasattr(s, "mad") else (s - s.median()).abs().median()),
+            "Skewness": s.skew(),
+            "Sum": s.sum(),
+            "Variance": s.var(ddof=1),
+            "Monotonicity": (
+                "Monotonic increasing" if s.is_monotonic_increasing else
+                ("Monotonic decreasing" if s.is_monotonic_decreasing else "Not monotonic")
+            ),
+        }
+        df = pd.DataFrame({"value": desc}).reset_index().rename(columns={"index": ""})
+        return df
+
+    @staticmethod
+    def variable_top_categories(df: pd.DataFrame, col: str, top: int = 5) -> pd.DataFrame:
+        """
+        Kategorik bir kolonda en sık görülen top-N değerleri, count ve yüzde ile döndürür.
+        En sona 'Other values' satırını ekler (varsa).
+        """
+        s = df[col].astype("string").fillna("NA")
+        total = int(s.shape[0])
+        vc = s.value_counts(dropna=False)  # value -> count (azalan)
+        top_vc = vc.head(top)
+        others = int(vc.iloc[top:].sum()) if vc.shape[0] > top else 0
+
+        out = top_vc.rename_axis("value").reset_index(name="count")
+        out["freq_pct"] = (out["count"] / max(1, total)) * 100.0
+        if others > 0:
+            out.loc[len(out)] = ["Other values …", others, (others / max(1, total)) * 100.0]
+
+        out["count"] = out["count"].astype(int)
+        out["freq_pct"] = out["freq_pct"].astype(float)
+        return out
+
