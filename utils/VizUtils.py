@@ -245,8 +245,19 @@ class VizUtils:
 
         # === ALT TEMEL GRAFİK ===
         base = alt.Chart(corr_long).encode(
-            x=alt.X("var1:N", title=None, sort=axis_order),
-            y=alt.Y("var2:N", title=None, sort=axis_order),
+            x=alt.X(
+                "var1:N",
+                title=None,
+                sort=axis_order,
+                axis=alt.Axis(
+                    labelAngle=0  # Etiketleri yatay (0 derece) yapar
+                )
+            ),
+            y=alt.Y(
+                "var2:N",
+                title=None,
+                sort=axis_order
+            ),
             tooltip=[
                 alt.Tooltip("var1:N", title="Değişken 1"),
                 alt.Tooltip("var2:N", title="Değişken 2"),
@@ -346,11 +357,23 @@ class VizUtils:
 
         # Grafik
         chart = (
-            alt.Chart(df_bar, title=alt.TitleParams(text=title, fontSize=20, fontWeight="bold", anchor="middle"))
-            .mark_bar(size=22)
+            alt.Chart(df_bar, title=alt.TitleParams(text=title, fontSize=26, fontWeight="bold", anchor="middle"))
+            .mark_bar(size=28)
             .encode(
-                x=alt.X("Korelasyon:Q", title="Korelasyon Gücü", scale=alt.Scale(domain=[-1, 1])),
-                y=alt.Y("Değişken:N", sort="-x", title="Değişkenler"),
+                x=alt.X("Korelasyon:Q",
+                        scale=alt.Scale(domain=[-1, 1]),
+                        axis=alt.Axis(
+                            title="Korelasyon Gücü",
+                            titleFontWeight="bold"
+                        )
+                ),
+                y=alt.Y("Değişken:N",
+                        sort="-x",
+                        axis=alt.Axis(
+                            title="Değişkenler",
+                            titleFontWeight="bold"
+                        )
+                ),
                 color=alt.condition(
                     "datum.Korelasyon > 0",
                     alt.value("#E4572E"),  # Pozitif -> Turuncu
@@ -361,8 +384,17 @@ class VizUtils:
                     alt.Tooltip("Korelasyon:Q", title="Değer", format=".3f"),
                 ],
             )
-            .properties(width=550, height=400, background=bg)
-            .configure_axis(labelColor=txt, titleColor=txt)
+            .properties(
+                width=600,
+                height=600,
+                background=bg
+            )
+            .configure_axis(
+                labelColor=txt,
+                titleColor=txt,
+                labelFontSize=18,
+                titleFontSize=20,
+            )
             .configure_title(color=txt)
         )
 
@@ -370,17 +402,28 @@ class VizUtils:
 
     # Bar Plot
     @staticmethod
-    def missing_bar(df_missing: pl.DataFrame, dark=False, height=350):
+    def missing_bar(df_missing: pl.DataFrame, dark=False):
         pdf = df_missing.to_pandas()
         bg = "#1E1E1E" if dark else "#FFFFFF"
         txt = "#F5F6F8" if dark else "#111827"
 
         chart = (
-            alt.Chart(pdf)
+            alt.Chart(pdf, title=alt.TitleParams(text="Eksik Değer Dağılımı", fontSize=26, fontWeight="bold", anchor="middle"))
             .mark_bar()
             .encode(
-                x=alt.X("missing_pct:Q", title="Eksik Değer Oranı (%)"),
-                y=alt.Y("column:N", sort="-x", title="Kolon Adı"),
+                x=alt.X("missing_pct:Q",
+                        axis=alt.Axis(
+                            title="Eksik Değer Oranı (%)",
+                            titleFontWeight="bold"
+                        )
+                ),
+                y=alt.Y("column:N",
+                        sort="-x",
+                        axis=alt.Axis(
+                            title="Değişkenler",
+                            titleFontWeight="bold"
+                        )
+                ),
                 color=alt.Color("missing_pct:Q", scale=alt.Scale(scheme="reds")),
                 tooltip=[
                     alt.Tooltip("column:N", title="Kolon"),
@@ -388,8 +431,24 @@ class VizUtils:
                     alt.Tooltip("missing_pct:Q", title="Oran (%)", format=".2f")
                 ],
             )
-            .properties(height=height, background=bg)
-            .configure_axis(labelColor=txt, titleColor=txt)
+            .properties(
+                width=600,
+                height=600,
+                background=bg,
+            )
+            .configure_axis(
+                labelColor=txt,
+                titleColor=txt,
+                labelFontSize=18,
+                titleFontSize=20,
+            )
+            .configure_legend(  # <-- BU SATIRI EKLEYİN
+                titleColor=txt,
+                labelColor=txt,
+                titleFontSize=16,
+                labelFontSize=14,
+                gradientLength=400
+            )
         )
         return chart
 
@@ -397,9 +456,19 @@ class VizUtils:
     @staticmethod
     def missing_matrix(df: pl.DataFrame):
         pdf = df.to_pandas()
-        fig, ax = plt.subplots(figsize=(12, 5))
-        msno.matrix(pdf.sample(min(5000, len(pdf))), ax=ax, sparkline=False)
-        ax.set_title("Eksik Değer Matrisi", fontsize=13)
+        fig, ax = plt.subplots(figsize=(7, 3.5))
+        msno.matrix(
+            pdf.sample(min(5000,
+            len(pdf))),
+            ax=ax,
+            sparkline=False,
+            fontsize=6
+        )
+        ax.set_title(
+            "Eksik Değer Matrisi",
+            fontsize=8,
+            fontweight="bold"
+        )
         return fig
 
     # Heatmap (Missingno)
