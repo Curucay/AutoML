@@ -1,124 +1,448 @@
-# utils/VizUtils.py
-from __future__ import annotations
+import polars as pl
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.colors import sample_colorscale
+import altair as alt
+import seaborn as sns
+import matplotlib.pyplot as plt
+import missingno as msno
+import networkx as nx
 
 class VizUtils:
-    DEFAULT_SCALE = px.colors.sequential.Blues
+    @staticmethod
+    def _theme_cfg(dark: bool = False):
+        bg = "#1E1E1E" if dark else "#FFFFFF"
+        grid = "#2A2A2A" if dark else "#EAEAEA"
+        txt = "#F5F6F8" if dark else "#111827"
+        return dict(
+            view={"stroke": "transparent", "fill": bg},
+            background=bg,
+            axis=dict(labelColor=txt, titleColor=txt, gridColor=grid, domainColor=grid),
+            legend=dict(labelColor=txt, titleColor=txt),
+        )
 
     @staticmethod
-    def _theme_colors(dark: bool = False) -> dict:
-        """Dark/Light temaya göre bar ve çizgi renkleri."""
-        return {
-            "template": "plotly_dark" if dark else "plotly_white",
-            "paper": "rgba(0,0,0,0)",
-            "plot": "rgba(30,30,30,1)" if dark else "rgba(255,255,255,1)",
-            "bar": "rgba(59,130,246,0.85)" if dark else "rgba(37,99,235,0.85)",  # mavi
-            "bar_line": "rgba(17,24,39,0.60)" if dark else "rgba(255,255,255,0.45)",  # bar kenarı
-            "curve": "rgba(239,246,255,0.9)" if dark else "rgba(17,24,39,0.70)",  # KDE çizgisi
+    def histogram(series: pl.Series, bins: int = 40, title: str = "Histogram",
+                  height: int = 260, dark: bool = False) -> alt.Chart:
+        """
+        Sayısal kolonun histogram ve densite dağılımını çizer.
+        """
+        s = series.cast(pl.Float64, strict=False).drop_nulls()
+        if s.is_empty():
+            return alt.Chart(pl.DataFrame({"x": [], "count": []})).mark_bar()
+
+        _sample_max = 200_000  # Altair için 200k satır fazlasıyla yeterli
+        if s.len() > _sample_max:
+            s = s.sample(n=_sample_max, shuffle=True)
+
+        df = pl.DataFrame({"x": s})
+        cfg = VizUtils._theme_cfg(dark)
+
+        # Histogram verisini Pandas'a çeviriyoruz çünkü Altair Polars ile direkt çalışmaz
+        pdf = df.to_pandas()
+
+        hist = (alt.Chart(pdf)
+                .mark_bar(size=0, opacity=0.9, color="#2563EB")
+                .encode(
+                    x=alt.X("x:Q", bin=alt.Bin(maxbins=bins), title=None),
+                    y=alt.Y("count()", title=None),
+                    tooltip=[alt.Tooltip("count()", title="Count"),
+                             alt.Tooltip("x:Q", bin=True, title="Range")]
+                ))
+
+        dens = (alt.Chart(pdf)
+                .transform_density("x", as_=["x", "density"])
+                .mark_line(color="#E5E7EB" if dark else "#111827", strokeWidth=2)
+                .encode(x="x:Q", y=alt.Y("density:Q", axis=None)))
+
+        return (hist + dens).properties(title=title, height=height).configure(**cfg)
+
+    @staticmethod
+    def top_categories(df: pl.DataFrame, col: str, top: int = 8,
+                       title: str = "Top categories", height: int = 260,
+                       dark: bool = False) -> alt.Chart:
+        """
+        Kategorik kolonların en sık görülen değerlerini çizer.
+        Polars vektörel ve tip uyumlu sürüm.
+        """
+        s = df[col].cast(pl.Utf8).fill_null("NA")
+        total = s.len()
+
+        # Value counts (Polars native, UInt32 'count' üretir)
+        vc = s.value_counts(sort=True)
+        main_col = vc.columns[0]  # örn: "province"
+        top_df = vc.head(top)
+
+        # Diğer değerlerin toplamı
+        top_count_sum = int(top_df["count"].sum()) if top_df.height > 0 else 0
+        others_count = int(total - top_count_sum) if vc.height > top else 0
+
+        # Frekans oranlarını hesapla
+        top_df = top_df.with_columns(
+            (pl.col("count") / max(1, total) * 100).alias("freq_pct")
+        )
+
+        # Kolon adlarını normalize et
+        top_df = top_df.rename({main_col: "value"})
+
+        # ✅ Tipleri eşitle: UInt64 + Float64
+        top_df = top_df.with_columns([
+            pl.col("count").cast(pl.UInt64),
+            pl.col("freq_pct").cast(pl.Float64)
+        ])
+
+        # 'Other values' satırını ekle
+        if others_count > 0:
+            other_row = pl.DataFrame({
+                "value": ["Other values"],
+                "count": [others_count],
+                "freq_pct": [others_count / max(1, total) * 100]
+            })
+
+            # ✅ Aynı tipleri koru
+            other_row = other_row.with_columns([
+                pl.col("count").cast(pl.UInt64),
+                pl.col("freq_pct").cast(pl.Float64)
+            ])
+
+            top_df = pl.concat([top_df, other_row])
+
+        # --- Tema ayarları (Altair)
+        bg = "#1E1E1E" if dark else "#FFFFFF"
+        grid = "#2A2A2A" if dark else "#EAEAEA"
+        txt = "#F5F6F8" if dark else "#111827"
+        cfg = dict(
+            view={"stroke": "transparent", "fill": bg},
+            background=bg,
+            axis=dict(labelColor=txt, titleColor=txt, gridColor=grid, domainColor=grid),
+            legend=dict(labelColor=txt, titleColor=txt),
+        )
+
+        # --- Görselleştirme (aynı stil korunur)
+        pdf = top_df.to_pandas()
+        base = alt.Chart(pdf).encode(
+            x=alt.X("count:Q", title=None),
+            y=alt.Y("value:N", sort=None, title=None),
+            tooltip=[
+                alt.Tooltip("value:N", title="Value"),
+                alt.Tooltip("count:Q", title="Count", format=",.0f"),
+                alt.Tooltip("freq_pct:Q", title="Frequency (%)", format=".1f")
+            ]
+        )
+
+        bars = base.mark_bar(opacity=0.9).encode(
+            color=alt.Color("value:N").scale(scheme="tableau10").legend(None)
+        )
+        txt_layer = base.mark_text(align="left", dx=4,
+                                   color="#E5E7EB" if dark else "#111827"
+                                   ).encode(text=alt.Text("count:Q", format=",.0f"))
+
+        return (bars + txt_layer).properties(title=title, height=height).configure(**cfg)
+
+    @staticmethod
+    def time_count(series: pl.Series, freq: str = "D", title: str = "Time distribution",
+                   height: int = 300, dark: bool = False) -> alt.Chart:
+        """
+        Tarihsel kolonun zaman periyoduna göre dağılımını çizer.
+        """
+        # (Önceki düzeltmemizdeki tip kontrolü)
+        if series.dtype == pl.Datetime:
+            s = series.drop_nulls()
+        elif series.dtype == pl.Utf8:
+            s = series.str.strptime(pl.Datetime, strict=False).drop_nulls()
+        else:
+            s = pl.Series(values=[], dtype=pl.Datetime)
+
+        if s.is_empty():
+            return alt.Chart(pl.DataFrame({"x": [], "count": []})).mark_bar()
+
+        # Tarihe göre grupla
+        df = pl.DataFrame({"x": s})
+
+        # 1. Önce veriyi sırala (group_by_dynamic için zorunlu)
+        df_sorted = df.sort("x")
+
+        freq_map = {
+            "D": "1d",  # Günlük
+            "W": "1w",  # Haftalık
+            "M": "1mo",  # Aylık (Month-start)
+            "Y": "1y"  # Yıllık
         }
+        # freq'i Polars formatına çevir, bulamazsa orijinali kullan
+        polars_freq = freq_map.get(freq.upper(), freq)
+        # ======================================
+
+        # 2. group_by_dynamic ile grupla (çok daha hızlı)
+        grp = df_sorted.group_by_dynamic(
+            "x",  # Zaman kolonu
+            every=polars_freq,  # Gruplama periyodu (DÜZELTİLDİ)
+            period=polars_freq,  # Periyot aralığı (DÜZELTİLDİ)
+            closed="left"  # Periyodun başlangıcını dahil et
+        ).agg(
+            pl.count().alias("count")  # 'x' kolonunu say
+        )
+
+        grp = grp.rename({"x": "period"})
+        # =======================================================
+
+        cfg = VizUtils._theme_cfg(dark)
+        # 'grp' zaten sıralı gelir (sort("period") gerekmez)
+        pdf = grp.rename({"period": "x"}).to_pandas()
+
+        ch = (alt.Chart(pdf)
+              .mark_bar(opacity=0.9, color="#2563EB")
+              .encode(
+            x=alt.X("x:T", title=None),
+            y=alt.Y("count:Q", title=None),
+            tooltip=[alt.Tooltip("x:T", title="Date"),
+                     alt.Tooltip("count:Q", title="Count", format=",.0f")]
+        )
+              .properties(title=title, height=height)
+              .configure(**cfg))
+        return ch
 
     @staticmethod
-    def pretty_histogram(series: pd.Series, bins: int = 40, title: str = "Histogram",
-                         height: int = 260, dark: bool = False) -> go.Figure:
-        """Tema-duyarlı: tek renk bar + belirgin kenar + yumuşak eğri."""
-        C = VizUtils._theme_colors(dark)
-        x = pd.to_numeric(series, errors="coerce").dropna().values
-        fig = go.Figure()
-        if x.size == 0:
-            fig.update_layout(template=C["template"], height=height,
-                              margin=dict(l=10, r=10, t=40, b=10),
-                              paper_bgcolor=C["paper"], plot_bgcolor=C["plot"])
-            return fig
+    def correlation_heatmap(
+            df_corr: pl.DataFrame,
+            dark: bool = False,
+            title: str = "Korelasyon Matrisi"
+    ) -> alt.Chart:
+        """
+        Altair ile interaktif korelasyon matrisi.
+        Geliştirilmiş yazı boyutları, ortalı başlık ve okunabilir legend.
+        """
 
-        counts, edges = np.histogram(x, bins=bins)
-        mids = (edges[:-1] + edges[1:]) / 2.0
-        widths = np.diff(edges)
+        # 1️⃣ Sayısal değişken yoksa bilgi göster
+        if "message" in df_corr.columns:
+            base = alt.Chart(pd.DataFrame({"info": ["Sayısal değişken bulunamadı."]})).mark_text(
+                text="Sayısal değişken bulunamadı.",
+                size=16,
+                color="red"
+            ).properties(title=title, height=100)
+            return base
 
-        # Tek, doygun bar rengi (gradyan yok -> kontrast net)
-        fig.add_bar(
-            x=edges[:-1],
-            y=counts,
-            width=widths,
-            marker=dict(color=C["bar"], line=dict(color=C["bar_line"], width=1)),
-            hovertemplate="Range: %{x} – %{customdata}<br>Count: %{y:,}<extra></extra>",
-            customdata=np.round(edges[1:], 3),
-            name="count",
+        # 2️⃣ Polars → Pandas dönüşümü ve uzun forma (melt)
+        pdf = df_corr.to_pandas().set_index("column")
+        corr_long = (
+            pdf.reset_index()
+            .melt(id_vars="column", var_name="variable", value_name="correlation")
+            .rename(columns={"column": "var1", "variable": "var2"})
         )
 
-        # KDE-benzeri pürüzsüz eğri
-        if counts.sum() > 0:
-            k = max(3, int(0.04 * counts.size) * 2 + 1)
-            t = np.linspace(-2.5, 2.5, k)
-            kernel = np.exp(-0.5 * t ** 2);
-            kernel /= kernel.sum()
-            smooth = np.convolve(counts, kernel, mode="same")
-            fig.add_scatter(x=mids, y=smooth, mode="lines",
-                            line=dict(width=2, color=C["curve"]),
-                            name="smooth",
-                            hovertemplate="x: %{x}<br>Smoothed: %{y:.0f}<extra></extra>")
+        # 3️⃣ Tema renkleri
+        bg = "#1E1E1E" if dark else "#FFFFFF"
+        txt = "#F5F6F8" if dark else "#111827"
 
-        fig.update_layout(
-            template=C["template"], height=height,
-            margin=dict(l=10, r=10, t=40, b=10),
-            bargap=0.08, showlegend=False,
-            title=dict(text=title, x=0.5, xanchor="center", y=0.92),
-            xaxis=dict(title=None, zeroline=False, showgrid=True),
-            yaxis=dict(title=None, showgrid=True),
-            paper_bgcolor=C["paper"], plot_bgcolor=C["plot"],
+        # 4️⃣ Eksen sıralaması (orijinal sıralama)
+        axis_order = list(pdf.columns)
+
+        # 5️⃣ Dinamik yükseklik ve yazı stili
+        cell_size = 70
+        min_height = 800
+        max_height = 1200
+        chart_height = max(min_height, min(max_height, len(axis_order) * cell_size))
+        text_color_on_strong = "#FFFFFF"
+        text_color_on_weak = txt
+
+        # === ALT TEMEL GRAFİK ===
+        base = alt.Chart(corr_long).encode(
+            x=alt.X("var1:N", title=None, sort=axis_order),
+            y=alt.Y("var2:N", title=None, sort=axis_order),
+            tooltip=[
+                alt.Tooltip("var1:N", title="Değişken 1"),
+                alt.Tooltip("var2:N", title="Değişken 2"),
+                alt.Tooltip("correlation:Q", title="Korelasyon", format=".3f"),
+            ]
         )
+
+        # === HEATMAP ===
+        heatmap = base.mark_rect().encode(
+            color=alt.Color(
+                "correlation:Q",
+                scale=alt.Scale(
+                    scheme="redblue",
+                    domain=[-1, 1],
+                    range="diverging"
+                ),
+                legend=alt.Legend(
+                    title="Korelasyon",
+                    titleFontSize=14,
+                    titleFontWeight="bold",
+                    labelFontSize=14,
+                    labelLimit=60,
+                    padding=10,
+                    gradientLength=chart_height - 200
+                )
+            )
+        )
+
+        # === METİN ETİKETLERİ ===
+        text_labels = base.mark_text(baseline="middle", fontSize=15, fontWeight="bold").encode(
+            text=alt.Text("correlation:Q", format=".3f"),
+            color=alt.condition(
+                alt.expr.abs(alt.datum.correlation) > 0.5,
+                alt.value(text_color_on_strong),
+                alt.value(text_color_on_weak)
+            )
+        )
+
+        # === FİNAL GRAFİK ===
+        final_chart = (heatmap + text_labels).properties(
+            title=alt.TitleParams(
+                text=title,
+                fontSize=26,  # 🔹 Başlık büyütüldü
+                fontWeight="bold",  # 🔹 Kalın yapıldı
+                anchor="middle",  # 🔹 Ortalandı
+                dy=-5  # 🔹 Yukarı biraz taşındı
+            ),
+            height=chart_height,
+            width=chart_height,
+            background=bg
+        ).configure_axis(
+            labelFontSize=15,  # 🔹 Eksen yazıları büyütüldü
+            titleFontSize=16,
+            labelColor=txt,
+            titleColor=txt
+        ).configure_title(
+            color=txt,
+            font="Inter",
+            fontWeight="bold"
+        ).configure_legend(
+            titleColor=txt,
+            labelColor=txt,
+            labelFontSize=14,
+            titleFontSize=16
+        ).interactive()
+
+        return final_chart
+
+    @staticmethod
+    def correlation_strength_bar(
+            df_corr: pl.DataFrame,
+            target_col: str,
+            dark: bool = False,
+            title: str = "Korelasyon Gücü Grafiği"
+    ) -> alt.Chart:
+        """
+        Hedef değişkenle diğer değişkenlerin korelasyon gücünü sıralı çubuk grafikle gösterir.
+        """
+
+        if "message" in df_corr.columns or target_col not in df_corr.columns:
+            base = alt.Chart(pd.DataFrame({"info": ["Hedef değişken bulunamadı."]})).mark_text(
+                text="Hedef değişken bulunamadı.",
+                size=14,
+                color="red"
+            ).properties(title=title, height=100)
+            return base
+
+        # Polars → Pandas
+        pdf = df_corr.to_pandas().set_index("column")
+        correlations = pdf[target_col].drop(target_col, errors="ignore").sort_values(key=abs, ascending=False)
+        df_bar = correlations.reset_index()
+        df_bar.columns = ["Değişken", "Korelasyon"]
+
+        # Tema renkleri
+        bg = "#1E1E1E" if dark else "#FFFFFF"
+        txt = "#F5F6F8" if dark else "#111827"
+
+        # Grafik
+        chart = (
+            alt.Chart(df_bar, title=alt.TitleParams(text=title, fontSize=20, fontWeight="bold", anchor="middle"))
+            .mark_bar(size=22)
+            .encode(
+                x=alt.X("Korelasyon:Q", title="Korelasyon Gücü", scale=alt.Scale(domain=[-1, 1])),
+                y=alt.Y("Değişken:N", sort="-x", title="Değişkenler"),
+                color=alt.condition(
+                    "datum.Korelasyon > 0",
+                    alt.value("#E4572E"),  # Pozitif -> Turuncu
+                    alt.value("#4B9CD3"),  # Negatif -> Mavi
+                ),
+                tooltip=[
+                    alt.Tooltip("Değişken:N", title="Değişken"),
+                    alt.Tooltip("Korelasyon:Q", title="Değer", format=".3f"),
+                ],
+            )
+            .properties(width=550, height=400, background=bg)
+            .configure_axis(labelColor=txt, titleColor=txt)
+            .configure_title(color=txt)
+        )
+
+        return chart
+
+    # Bar Plot
+    @staticmethod
+    def missing_bar(df_missing: pl.DataFrame, dark=False, height=350):
+        pdf = df_missing.to_pandas()
+        bg = "#1E1E1E" if dark else "#FFFFFF"
+        txt = "#F5F6F8" if dark else "#111827"
+
+        chart = (
+            alt.Chart(pdf)
+            .mark_bar()
+            .encode(
+                x=alt.X("missing_pct:Q", title="Eksik Değer Oranı (%)"),
+                y=alt.Y("column:N", sort="-x", title="Kolon Adı"),
+                color=alt.Color("missing_pct:Q", scale=alt.Scale(scheme="reds")),
+                tooltip=[
+                    alt.Tooltip("column:N", title="Kolon"),
+                    alt.Tooltip("missing_count:Q", title="Eksik Sayısı", format=",d"),
+                    alt.Tooltip("missing_pct:Q", title="Oran (%)", format=".2f")
+                ],
+            )
+            .properties(height=height, background=bg)
+            .configure_axis(labelColor=txt, titleColor=txt)
+        )
+        return chart
+
+    # Matrix Plot (Missingno)
+    @staticmethod
+    def missing_matrix(df: pl.DataFrame):
+        pdf = df.to_pandas()
+        fig, ax = plt.subplots(figsize=(12, 5))
+        msno.matrix(pdf.sample(min(5000, len(pdf))), ax=ax, sparkline=False)
+        ax.set_title("Eksik Değer Matrisi", fontsize=13)
         return fig
 
+    # Heatmap (Missingno)
     @staticmethod
-    def top_categories_bar(df: pd.DataFrame, col: str, top: int = 6, height: int = 260,
-                           title: str = "Top categories", dark: bool = False) -> go.Figure:
-        C = VizUtils._theme_colors(dark)
-
-        s = df[col].astype("string").fillna("NA")
-        total = int(s.shape[0])
-        vc = s.value_counts(dropna=False)
-        top_df = vc.head(top).rename_axis("value").reset_index(name="count")
-        other = int(vc.iloc[top:].sum()) if vc.shape[0] > top else 0
-        if other > 0:
-            top_df.loc[len(top_df)] = ["Other values …", other]
-        top_df["freq_pct"] = (top_df["count"] / max(1, total)) * 100.0
-        top_df = top_df.iloc[::-1].reset_index(drop=True)
-
-        fig = px.bar(top_df, x="count", y="value", orientation="h", text="count",
-                     labels={"value": "", "count": "", "freq_pct": "Frequency (%)"},
-                     title=title, color_discrete_sequence=[C["bar"]])
-        fig.update_traces(
-            marker=dict(line=dict(color=C["bar_line"], width=1)),
-            texttemplate="%{text:,}", insidetextanchor="start",
-            hovertemplate="<b>%{y}</b><br>Count: %{x:,}<extra></extra>",
-        )
-        fig.update_layout(
-            template=C["template"], height=height,
-            margin=dict(l=10, r=10, t=40, b=10),
-            xaxis=dict(showgrid=True, zeroline=False, title=None),
-            yaxis=dict(showgrid=False, title=None),
-            showlegend=False,
-            paper_bgcolor=C["paper"], plot_bgcolor=C["plot"],
-        )
+    def missing_heatmap(df: pl.DataFrame):
+        pdf = df.to_pandas()
+        fig, ax = plt.subplots(figsize=(10, 8))
+        msno.heatmap(pdf.sample(min(10000, len(pdf))), ax=ax)
+        ax.set_title("Eksik Değer Korelasyon Haritası", fontsize=13)
         return fig
 
+    # Dendrogram (Missingno)
     @staticmethod
-    def time_count_bar(series: pd.Series, freq: str = "D", height: int = 320,
-                       title: str = "Time distribution", dark: bool = False) -> go.Figure:
-        C = VizUtils._theme_colors(dark)
-        sd = pd.to_datetime(series, errors="coerce")
-        grp = sd.dropna().dt.to_period(freq).value_counts().sort_index()
-        fig = go.Figure()
-        if not grp.empty:
-            fig = px.bar(x=grp.index.to_timestamp(), y=grp.values,
-                         labels={"x": "", "y": "Count"}, title=title,
-                         color_discrete_sequence=[C["bar"]])
-            fig.update_traces(marker=dict(line=dict(color=C["bar_line"], width=1)),
-                              hovertemplate="%{x|%Y-%m-%d}<br>Count: %{y:,}<extra></extra>")
-        fig.update_layout(template=C["template"], height=height, margin=dict(l=10, r=10, t=30, b=10),
-                          showlegend=False, paper_bgcolor=C["paper"], plot_bgcolor=C["plot"])
+    def missing_dendrogram(df: pl.DataFrame):
+        pdf = df.to_pandas()
+        fig, ax = plt.subplots(figsize=(5.5, 3.5))
+        msno.dendrogram(
+            pdf.sample(min(2000, len(pdf))),
+            ax=ax,
+            orientation='top'
+        )
+        ax.set_title("Eksik Değer Dendrogramı", fontsize=7, pad=7)
+        for label in ax.get_xticklabels():
+            label.set_rotation(45)
+            label.set_fontsize(8)
+        # --- X VE Y EKSEN ETİKETLERİ ---
+        ax.set_xlabel("Değişkenler", fontsize=7, labelpad=6)
+        ax.set_ylabel("Korelasyon Mesafesi", fontsize=7, labelpad=6)
+        # --- TICK FONT BOYUTLARI VE ROTASYONLAR ---
+        ax.tick_params(axis='x', labelsize=7, rotation=45)
+        ax.tick_params(axis='y', labelsize=7)
+        # --- LAYOUT OPTİMİZASYONU ---
+        plt.tight_layout(pad=1.0)
+        return fig
+
+    # Eksik Korelasyon Plotu (Correlation Plot)
+    @staticmethod
+    def missing_corr_plot(df: pl.DataFrame):
+        pdf = df.select([pl.col(c).is_null().cast(pl.Int8).alias(c) for c in df.columns]).to_pandas()
+        corr = pdf.corr()
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(corr, cmap="Reds", linewidths=0.5, ax=ax)
+        ax.set_title("Eksik Değer Korelasyon Grafiği", fontsize=10)
         return fig
 
