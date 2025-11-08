@@ -639,6 +639,113 @@ class DataUtils:
         )
         return summary
 
+    # Eksik Değerlerin Doldurulması
+    @staticmethod
+    def get_missing_columns(df: pl.DataFrame) -> list[str]:
+        """
+        Eksik değer (null) içeren kolonları döndürür.
+        """
+        null_counts = df.null_count().to_dicts()[0]
+        return [c for c, v in null_counts.items() if v > 0]
+
+    # === 🧩 2. Tüm Doldurma Yöntemleri (Tek Nokta Tanımı) ===
+    @staticmethod
+    def get_fill_methods() -> dict[str, str]:
+        """
+        Mevcut tüm doldurma yöntemlerini (anahtar + açıklama) döndürür.
+        UI ve dahili işlem mantığı bu sözlükten beslenir.
+        """
+        return {
+            "specific": "🪄 Belirli bir değerle doldur",
+            "forward": "➡️ İleri yönlü doldur (ffill)",
+            "backward": "⬅️ Geri yönlü doldur (bfill)",
+            "mean": "📊 Ortalama ile doldur",
+            "median": "📈 Medyan ile doldur",
+            "mode": "🔁 Mod (en sık görülen) ile doldur",
+            "zero": "0️⃣ Sıfır (0) ile doldur",
+            "min": "🔽 Minimum değerle doldur",
+            "max": "🔼 Maksimum değerle doldur",
+            "custom": "✏️ Sabit (manuel) değerle doldur",
+        }
+
+    # === 🧩 3. Tip Bazlı Uygun Yöntem Önerisi ===
+    @staticmethod
+    def suggest_fill_methods(dtype: pl.DataType) -> list[str]:
+        """
+        Veri tipine göre uygulanabilir doldurma yöntemlerini döndürür.
+        """
+        if dtype in (pl.Int64, pl.Float64):
+            return ["mean", "median", "mode", "min", "max", "zero", "custom"]
+        elif dtype in (pl.Utf8, pl.Boolean):
+            return ["mode", "custom"]
+        elif dtype in (pl.Date, pl.Datetime):
+            return ["forward", "backward", "mode", "custom"]
+        else:
+            return ["custom"]
+
+    # === 🧩 4. Doldurma Değeri Hesaplama (Metoda Göre) ===
+    @staticmethod
+    def compute_fill_value(df: pl.DataFrame, column: str, method: str, custom_value=None):
+        """
+        Kolon ve seçilen metoda göre doldurma değerini hesaplar.
+        None dönerse doldurma yapılmaz (örneğin tüm değerler null ise).
+        """
+        s = df[column]
+
+        if s.null_count() == len(s):
+            # Kolon tamamen boşsa hiçbir şey yapılmaz
+            return None
+
+        if method == "mean":
+            val = s.mean()
+        elif method == "median":
+            val = s.median()
+        elif method == "mode":
+            modes = s.drop_nulls().mode().to_list()
+            val = modes[0] if modes else None
+        elif method == "min":
+            val = s.min()
+        elif method == "max":
+            val = s.max()
+        elif method == "zero":
+            val = 0
+        elif method in ("specific", "custom"):
+            val = custom_value
+        else:
+            raise ValueError(f"Desteklenmeyen doldurma yöntemi: {method}")
+
+        # Eğer sonuç hala None ise, None döndür (fill_missing uyarı verecek)
+        return val
+
+    @staticmethod
+    def fill_missing(df: pl.DataFrame, column: str, method: str, custom_value=None) -> pl.DataFrame:
+        """
+        Seçilen kolonun eksik değerlerini belirtilen metoda göre doldurur.
+        Polars 1.x uyumludur (fill_null(strategy) yerine forward_fill/backward_fill).
+        """
+        col_expr = pl.col(column)
+
+        try:
+            # 1️⃣ İleri / geri doldurma
+            if method == "forward":
+                expr = col_expr.forward_fill()
+            elif method == "backward":
+                expr = col_expr.backward_fill()
+            else:
+                fill_val = DataUtils.compute_fill_value(df, column, method, custom_value)
+
+                if fill_val is None:
+                    # Eğer hesaplanabilir bir değer yoksa işlem yapma
+                    print(f"[UYARI] '{column}' için {method} yöntemiyle doldurma değeri hesaplanamadı. "
+                          f"Kolon tamamen boş olabilir.")
+                    return df  # no-op
+
+                expr = col_expr.fill_null(fill_val)
+
+            return df.with_columns(expr)
+
+        except Exception as e:
+            raise ValueError(f"{column} sütununda doldurma hatası: {e}")
 
 
 

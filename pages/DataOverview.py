@@ -627,3 +627,100 @@ class DataOverview:
             with tab5:
                 st.pyplot(VizUtils.missing_corr_plot(df))
 
+        # ----------------------------------------------------
+        # 🧩 Eksik Değer Doldurma Kartı
+        # ----------------------------------------------------
+        with st.container(border=True):
+            st.markdown("## 🧩 Eksik Değerleri Doldurma")
+
+            missing_cols = DataUtils.get_missing_columns(df)
+
+            if not missing_cols:
+                st.success("✅ Veri setinde eksik değer bulunmuyor.")
+                st.stop()
+
+            # 1️⃣ Kolon Seçimi + Bilgiler
+            c1, c2, c3 = st.columns([2, 2, 2])
+            with c1:
+                st.markdown("🎯 **Doldurulacak Kolon**")
+                fill_col = st.selectbox(
+                    "Doldurulacak Kolon",
+                    missing_cols,
+                    key="fill_col",
+                    label_visibility="collapsed"
+                )
+
+            current_dtype = df.schema[fill_col]
+            missing_count = df[fill_col].null_count()
+
+            with c2:
+                st.markdown("🔍 **Veri Tipi**")
+                st.markdown(
+                    f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;"
+                    f"color:#8ab4f8;text-align:center;'>{current_dtype}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            with c3:
+                st.markdown("📉 **Eksik Değer Sayısı**")
+                st.markdown(
+                    f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;"
+                    f"color:#f88a8a;text-align:center;'>{missing_count:,}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # 2️⃣ Geçerli Yöntemleri Al
+            all_methods = DataUtils.get_fill_methods()
+            valid_methods = DataUtils.suggest_fill_methods(current_dtype)
+
+            c4, c5 = st.columns([2, 2])
+            with c4:
+                st.markdown("🛠️ **Doldurma Yöntemi**")
+                selected_method = st.selectbox(
+                    "Doldurma Yöntemi",
+                    options=[m for m in all_methods.keys() if m in valid_methods],
+                    format_func=lambda k: all_methods[k],
+                    key="fill_method",
+                    label_visibility="collapsed"
+                )
+
+            # 3️⃣ Koşullu Değer Girişi
+            fill_value = None
+            with c5:
+                if selected_method in ("specific", "custom"):
+                    st.markdown("📝 **Doldurulacak Değer**")
+                    if current_dtype in pl.NUMERIC_DTYPES:
+                        fill_value = st.number_input("Değer", value=0, key="fill_val_num", label_visibility="collapsed")
+                    elif current_dtype == pl.Boolean:
+                        fill_value = st.selectbox("Değer", [True, False], key="fill_val_bool",
+                                                  label_visibility="collapsed")
+                    elif current_dtype == pl.Date:
+                        fill_value = st.date_input("Değer", key="fill_val_date", label_visibility="collapsed")
+                    elif current_dtype == pl.Datetime:
+                        fill_value = st.datetime_input("Değer", key="fill_val_datetime", label_visibility="collapsed")
+                    else:
+                        fill_value = st.text_input("Değer", value="NA", key="fill_val_str",
+                                                   label_visibility="collapsed")
+
+            # 4️⃣ Doldurma Uygulama
+            if st.button("🚀 Doldurmayı Uygula", key="apply_fill", disabled=(missing_count == 0)):
+                try:
+                    before = df[fill_col].null_count()
+
+                    df = DataUtils.fill_missing(df, fill_col, selected_method, fill_value)
+                    after = df[fill_col].null_count()
+
+                    st.session_state[DataOverview.SESSION_KEY_DATASETS][name] = df
+                    st.session_state["__profile_dirty__"] = True
+
+                    st.success(
+                        f"✅ '{fill_col}' kolonundaki {before:,} eksik değer "
+                        f"'{all_methods[selected_method]}' yöntemiyle dolduruldu. "
+                        f"Kalan eksik: {after:,}"
+                    )
+
+                    st.dataframe(df[[fill_col]].head(10), use_container_width=True)
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Doldurma hatası: {e}")
