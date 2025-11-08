@@ -265,6 +265,100 @@ class DataUtils:
         return joined
 
     @staticmethod
+    def convert_column_type(df: pl.DataFrame, column: str, target_type: str) -> pl.DataFrame:
+        """
+        Seçili kolonu verilen hedef türe dönüştürür.
+        Dönüşüm, tipler arası doğrudan (örn: Datetime->Date) veya
+        otomatik format tanıma (örn: String->Date) yoluyla yapılır.
+        """
+        try:
+            current_dtype = df[column].dtype
+
+            # 1️⃣ String dönüşümü
+            if target_type == "string":
+                df = df.with_columns(pl.col(column).cast(pl.Utf8))
+
+            # 2️⃣ Sayısal dönüşümler
+            elif target_type == "int":
+                df = df.with_columns(pl.col(column).cast(pl.Int64, strict=False))
+            elif target_type == "float":
+                df = df.with_columns(pl.col(column).cast(pl.Float64, strict=False))
+
+            # 3️⃣ Boolean dönüşümü
+            elif target_type == "boolean":
+                df = df.with_columns(pl.col(column).cast(pl.Boolean, strict=False))
+
+            # 4️⃣ Date dönüşümü (Sadece Yıl-Ay-Gün)
+            elif target_type == "date":
+                if current_dtype == pl.Datetime:
+                    # 1. Mevcut tip Datetime ise, saati sil (Verimli)
+                    df = df.with_columns(pl.col(column).cast(pl.Date))  # Bu zaten doğruydu
+                elif current_dtype == pl.Date:
+                    # 2. Zaten Date ise, dokunma
+                    pass
+                else:
+                    # 3. Diğer (string, int) tiplerden geliyorsa, OTOMATİK parse et
+                    df = df.with_columns(
+                        pl.col(column)
+                        .cast(pl.Utf8)
+                        .str.strptime(pl.Datetime, format=None, strict=False)
+                        .dt.date()
+                    )
+
+            # 5️⃣ Datetime dönüşümü (Tarih + Saat)
+            elif target_type == "datetime":
+                if current_dtype == pl.Date:
+                    # 1. Mevcut tip Date ise, saat ekle (Verimli)
+
+                    # [HATA DÜZELTMESİ 2]
+                    # .dt.datetime() metodu Date tipi üzerinde çalışmaz.
+                    # Doğru yöntem .cast(pl.Datetime) kullanmaktır.
+                    df = df.with_columns(pl.col(column).cast(pl.Datetime))
+
+                elif current_dtype == pl.Datetime:
+                    # 2. Zaten Datetime ise, dokunma
+                    pass
+                else:
+                    # 3. Diğer (string, int) tiplerden geliyorsa, OTOMATİK parse et
+                    df = df.with_columns(
+                        pl.col(column)
+                        .cast(pl.Utf8)
+                        .str.strptime(pl.Datetime, format=None, strict=False)
+                    )
+
+            return df
+
+        except Exception as e:
+            raise ValueError(f"Dönüşüm hatası ({column} -> {target_type}): {e}")
+
+    @staticmethod
+    def extract_date_parts(df: pl.DataFrame, column: str) -> pl.DataFrame:
+        """
+        [BONUS DÜZELTME] Docstring güncellendi.
+        Tarih veya Tarih/Saat sütunundan yıl, ay, gün bilgilerini çıkarır.
+        Sadece Datetime veya Date türü sütunlarda çalışır.
+        """
+        dtype = df[column].dtype
+
+        # 1️⃣ Kontrol: Sütun datetime değilse anlamlı uyarı ver
+        if dtype not in (pl.Datetime, pl.Date):
+            raise TypeError(
+                f"'{column}' sütunu {dtype} tipinde. "
+                f"Yalnızca Datetime veya Date türlerinde tarih ayrıştırma yapılabilir."
+            )
+
+        # 2️⃣ Güvenli dönüşüm işlemleri
+        try:
+            df = df.with_columns([
+                pl.col(column).dt.year().alias(f"{column}_year"),
+                pl.col(column).dt.month().alias(f"{column}_month"),
+                pl.col(column).dt.day().alias(f"{column}_day"),
+            ])
+            return df
+        except Exception as e:
+            raise ValueError(f"Tarih ayrıştırma hatası: {e}")
+
+    @staticmethod
     def _bytes_to_mb(nbytes: int) -> float:
         """
         Byte değerini megabayt (MB) cinsine dönüştürür.
@@ -285,13 +379,17 @@ class DataUtils:
         mem_mb = DataUtils._bytes_to_mb(df.estimated_size())
 
         # Eksik değer sayımı — güvenli versiyon
-        missing_total = int(df.select(pl.sum_horizontal([pl.col(c).is_null().cast(pl.Int64) for c in df.columns]))[0, 0])
+        missing_total = int(
+            df.select(pl.sum_horizontal([pl.col(c).is_null().cast(pl.Int64) for c in df.columns]))[0, 0])
         missing_ratio = float(missing_total) / float(max(1, n_rows * n_cols))
 
         # Tip sınıflandırması
         numeric_cols = [c for c, t in zip(df.columns, df.dtypes)
                         if t in (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Float32, pl.Float64)]
-        datetime_cols = [c for c, t in zip(df.columns, df.dtypes) if t == pl.Datetime]
+
+        # pl.Date tipi de Tarih/Zaman olarak sınıflandırılmalı.
+        datetime_cols = [c for c, t in zip(df.columns, df.dtypes) if t in (pl.Datetime, pl.Date)]
+
         categorical_cols = [c for c in df.columns if c not in numeric_cols + datetime_cols]
 
         sample = df.head(sample_rows)

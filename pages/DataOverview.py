@@ -240,7 +240,134 @@ class DataOverview:
         name = active_name
         size_bytes = meta.get(name, {}).get("size_bytes", 0)
 
+        # === 🔧 Veri Tipi Dönüştürme ve Tarih İşleme (Gelişmiş Kart) ===
+        with st.expander("🔧 Veri Tipi Dönüştürme ve Tarih İşleme", expanded=False):
+
+            with st.container():
+                col1, col2, col3 = st.columns([2, 2, 2])
+
+                with col1:
+                    # 1. Etiketi manuel olarak ekle
+                    st.markdown("🧩 **Dönüştürülecek Kolon**")
+                    selected_col = st.selectbox(
+                        "Dönüştürülecek Kolon",  # Bu, ekran okuyucular için gereklidir
+                        df.columns,
+                        key="conv_col",
+                        label_visibility="collapsed"  # Dahili etiketi gizle
+                    )
+
+                with col2:
+                    # 2. Bu kod zaten doğru yapıda (Etiket + İçerik)
+                    st.markdown("🔍 **Seçilen Kolonun Mevcut Tipi**")
+                    current_dtype = df.schema[selected_col]
+                    st.markdown(
+                        f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;color:#8ab4f8;'>"
+                        f"{current_dtype}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                with col3:
+                    # 3. Etiketi manuel olarak ekle
+                    st.markdown("🎯 **Tür Dönüştür**")
+                    dtype_options = ["string", "int", "float", "boolean", "date", "datetime"]
+                    selected_type = st.selectbox(
+                        f"Tür Dönüştür",  # Bu, ekran okuyucular için gereklidir
+                        dtype_options,
+                        key="conv_type",
+                        label_visibility="collapsed"  # Dahili etiketi gizle
+                    )
+
+            # --- Tarih ayarları (sadece tarih tipleri için) ---
+            extract_parts = False  # Varsayılan değer
+
+            if selected_type in ("date", "datetime"):
+                with st.expander("📅 Tarih Ayarları (İsteğe bağlı)", expanded=True):
+                    extract_parts = st.checkbox("📆 Yıl / Ay / Gün Kolonları Oluştur", key="extract_date_parts")
+
+            # --- Dönüştürme butonu (tüm işlemler burada yapılacak) ---
+            # [DÜZELTME] Buton 'if selected_type...' bloğunun DIŞINA taşındı.
+            # Bu sayede her zaman görünür olacak.
+            if st.button("🚀 Dönüştürmeyi Uygula", key="apply_type"):
+                try:
+                    # === Gerekli değişkenleri ve tipleri hazırla ===
+                    dtype_map = {
+                        "string": pl.Utf8, "int": pl.Int64, "float": pl.Float64,
+                        "boolean": pl.Boolean, "date": pl.Date, "datetime": pl.Datetime
+                    }
+                    target_dtype_obj = dtype_map.get(selected_type)  # Hedef Polars tipi
+                    current_dtype_obj = df.schema[selected_col]  # Mevcut Polars tipi
+
+                    # Bayraklar: Hangi işlemlerin yapıldığını takip et
+                    did_convert = False
+                    did_extract = False
+
+                    # === 1. TÜR DÖNÜŞÜMÜ GEREKLİ Mİ? ===
+                    # Hedef tip, mevcut tipten farklıysa
+                    conversion_is_needed = target_dtype_obj and current_dtype_obj != target_dtype_obj
+
+                    if conversion_is_needed:
+                        df = DataUtils.convert_column_type(df, selected_col, selected_type)
+                        st.session_state[DataOverview.SESSION_KEY_DATASETS][name] = df
+                        st.success(
+                            f"✅ {selected_col} sütunu '{current_dtype_obj}' ➜ '{df.schema[selected_col]}' tipine dönüştürüldü.")
+                        did_convert = True
+
+                    # === 2. TARİH PARÇALAMA GEREKLİ Mİ? ===
+                    # Bu blok 'extract_parts' bayrağına bağlı olduğu için
+                    # zaten sadece tarih tiplerinde ve checkbox seçiliyse çalışacaktır.
+                    if selected_type in ("date", "datetime") and extract_parts:
+                        # (Dönüşüm yeni yapılmış olabilir, df'in son halini kontrol et)
+                        current_dtype_after_conv = df.schema[selected_col]
+
+                        if current_dtype_after_conv not in (pl.Datetime, pl.Date):
+                            # Hata değil uyarı: Önce dönüştürmesi gerekir
+                            st.warning(
+                                f"'{selected_col}' sütunu {current_dtype_after_conv} tipinde. "
+                                f"Tarih parçalama için önce 'date' veya 'datetime' tipine dönüştürülmeli."
+                            )
+                        else:
+                            # Sadece bu işlem istendiyse (dönüşüm yapılmadıysa)
+                            if not did_convert:
+                                st.info(
+                                    f"'{selected_col}' zaten {current_dtype_after_conv} tipinde. Sadece tarih parçalama yapılıyor...")
+
+                            df = DataUtils.extract_date_parts(df, selected_col)
+                            st.session_state[DataOverview.SESSION_KEY_DATASETS][name] = df
+                            st.success("✅ Tarih parçaları oluşturuldu (year, month, day).")
+                            did_extract = True
+
+                            # Parçalanan kısımları göster
+                            st.dataframe(
+                                df.select([
+                                    selected_col,
+                                    f"{selected_col}_year",
+                                    f"{selected_col}_month",
+                                    f"{selected_col}_day"
+                                ]).head(5),
+                                use_container_width=True,
+                            )
+
+                    # === 3. İŞLEM YAPILMADIYSA BİLGİ VER ===
+                    if not did_convert and not did_extract:
+                        st.info("Seçilen kolon zaten istenen tipte ve/veya bir işlem (parçalama) seçilmedi.")
+
+                    # === 4. PROFİLİ YENİLE (Değişiklik varsa) ===
+                    if did_convert or did_extract:
+                        st.session_state["__profile_dirty__"] = True
+
+                        # Eğer sadece dönüşüm yapıldıysa (tarih tablosu yukarıda gösterilmediyse)
+                        # ana kolonun son halini göster
+                        if did_convert and not did_extract:
+                            st.dataframe(df[[selected_col]].head(5), use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Dönüştürme hatası: {e}")
+
         # ---- Profil kartları
+        if st.session_state.get("__profile_dirty__"):
+            st.cache_data.clear()
+            st.session_state.pop("__profile_dirty__")
+
         prof = cache_profile(df, name)
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Satır", f"{prof.n_rows:,}")
