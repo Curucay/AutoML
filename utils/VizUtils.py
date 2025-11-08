@@ -9,33 +9,6 @@ import networkx as nx
 
 class VizUtils:
     @staticmethod
-    def numeric_histogram(df: pl.DataFrame, column: str, dark=False):
-        """
-        Sayısal sütunlar için küçük histogram grafiği.
-        """
-        if df[column].dtype not in (pl.Int32, pl.Int64, pl.Float32, pl.Float64):
-            return None
-
-        pdf = df.select(column).to_pandas()
-        bg = "#111827" if dark else "#FFFFFF"
-        txt = "#F5F6F8" if dark else "#111827"
-
-        chart = (
-            alt.Chart(pdf, title=f"Dağılım: {column}")
-            .mark_bar(opacity=0.7)
-            .encode(
-                x=alt.X(f"{column}:Q", bin=alt.Bin(maxbins=20)),
-                y=alt.Y("count()", title="Frekans"),
-                tooltip=[column, "count()"]
-            )
-            .configure(background=bg)
-            .configure_axis(labelColor=txt, titleColor=txt)
-            .configure_title(color=txt, fontSize=13)
-            .properties(height=200)
-        )
-        return chart
-
-    @staticmethod
     def _theme_cfg(dark: bool = False):
         bg = "#1E1E1E" if dark else "#FFFFFF"
         grid = "#2A2A2A" if dark else "#EAEAEA"
