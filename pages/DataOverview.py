@@ -281,8 +281,8 @@ class DataOverview:
             extract_parts = False  # Varsayılan değer
 
             if selected_type in ("date", "datetime"):
-                with st.expander("📅 Tarih Ayarları (İsteğe bağlı)", expanded=True):
-                    extract_parts = st.checkbox("📆 Yıl / Ay / Gün Kolonları Oluştur", key="extract_date_parts")
+                st.markdown("📅 Tarih Ayarları (İsteğe bağlı)")
+                extract_parts = st.checkbox("Yıl / Ay / Gün Kolonları Oluştur", key="extract_date_parts")
 
             # --- Dönüştürme butonu (tüm işlemler burada yapılacak) ---
             # [DÜZELTME] Buton 'if selected_type...' bloğunun DIŞINA taşındı.
