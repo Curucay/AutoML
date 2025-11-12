@@ -13,6 +13,11 @@ from pandas.api.types import (
     is_datetime64tz_dtype,
 )
 
+# IterativeImputer'ı "experimental" (deneysel) olarak etkinleştir:
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import KNNImputer, IterativeImputer
+from sklearn.preprocessing import StandardScaler
+
 @dataclass
 class DataProfile:
     n_rows: int
@@ -653,19 +658,26 @@ class DataUtils:
     def get_fill_methods() -> dict[str, str]:
         """
         Mevcut tüm doldurma yöntemlerini (anahtar + açıklama) döndürür.
-        UI ve dahili işlem mantığı bu sözlükten beslenir.
+        [GÜNCELLEME] Model bazlı yöntemler eklendi.
         """
         return {
-            "specific": "🪄 Belirli bir değerle doldur",
+            # Temel Yöntemler
+            "custom": "✏️ Sabit (manuel) değerle doldur",
             "forward": "➡️ İleri yönlü doldur (ffill)",
             "backward": "⬅️ Geri yönlü doldur (bfill)",
+            "mode": "🔁 Mod (en sık görülen) ile doldur",
+
+            # Sayısal - Basit
             "mean": "📊 Ortalama ile doldur",
             "median": "📈 Medyan ile doldur",
-            "mode": "🔁 Mod (en sık görülen) ile doldur",
             "zero": "0️⃣ Sıfır (0) ile doldur",
             "min": "🔽 Minimum değerle doldur",
             "max": "🔼 Maksimum değerle doldur",
-            "custom": "✏️ Sabit (manuel) değerle doldur",
+
+            # Sayısal - Gelişmiş
+            "interpolate_linear": "📈 Doğrusal İnterpolasyon (Sıralı)",
+            "knn_imputer": "🤝 K-NN Imputer (Model Bazlı)",
+            "iterative_imputer": "🧠 Iterative Imputer (MICE, Model Bazlı)",
         }
 
     # === 🧩 3. Tip Bazlı Uygun Yöntem Önerisi ===
@@ -673,14 +685,29 @@ class DataUtils:
     def suggest_fill_methods(dtype: pl.DataType) -> list[str]:
         """
         Veri tipine göre uygulanabilir doldurma yöntemlerini döndürür.
+        [GÜNCELLEME] Gelişmiş yöntemler eklendi.
         """
+        # Tüm tipler için geçerli temel yöntemler
+        base_methods = ["mode", "custom", "forward", "backward"]
+
         if dtype in (pl.Int64, pl.Float64):
-            return ["mean", "median", "mode", "min", "max", "zero", "custom"]
+            # Sayısal yöntemler + Temel yöntemler
+            numeric_methods = [
+                "mean", "median", "min", "max", "zero",
+                "interpolate_linear", "knn_imputer", "iterative_imputer"
+            ]
+            return numeric_methods + base_methods
+
         elif dtype in (pl.Utf8, pl.Boolean):
-            return ["mode", "custom"]
+            # Kategorik/Boolean için sadece temel yöntemler mantıklı
+            return base_methods
+
         elif dtype in (pl.Date, pl.Datetime):
-            return ["forward", "backward", "mode", "custom"]
+            # Tarih için (mean, zero vb. mantıksız)
+            return base_methods
+
         else:
+            # Diğer tüm tipler (binary, list vb.)
             return ["custom"]
 
     # === 🧩 4. Doldurma Değeri Hesaplama (Metoda Göre) ===
@@ -721,31 +748,92 @@ class DataUtils:
     def fill_missing(df: pl.DataFrame, column: str, method: str, custom_value=None) -> pl.DataFrame:
         """
         Seçilen kolonun eksik değerlerini belirtilen metoda göre doldurur.
-        Polars 1.x uyumludur (fill_null(strategy) yerine forward_fill/backward_fill).
+        Polars 1.x uyumludur.
+        [GÜNCELLEME] Polars native, Sklearn (K-NN/MICE) ve basit yöntemleri destekler.
         """
         col_expr = pl.col(column)
 
         try:
-            # 1️⃣ İleri / geri doldurma
+            # === 1️⃣ Polars Native Yöntemler (Hızlı) ===
+            # (ffill/bfill/interpolate)
             if method == "forward":
                 expr = col_expr.forward_fill()
+                return df.with_columns(expr)
+
             elif method == "backward":
                 expr = col_expr.backward_fill()
+                return df.with_columns(expr)
+
+            elif method == "interpolate_linear":
+                # Sadece sayısal kolonlarda çalışır
+                if df[column].dtype not in pl.NUMERIC_DTYPES:
+                    raise TypeError("Doğrusal interpolasyon sadece sayısal kolonlarda çalışır.")
+                expr = col_expr.interpolate(method="linear")
+                return df.with_columns(expr)
+
+            # === 2️⃣ Sklearn Model Bazlı Yöntemler (Yavaş, Pandas dönüşümü) ===
+            # (K-NN / MICE)
+            elif method in ("knn_imputer", "iterative_imputer"):
+
+                # Bu yöntemler tahmin için *diğer* sayısal kolonları kullanır.
+                numeric_cols = [c for c, t in zip(df.columns, df.dtypes) if t in pl.NUMERIC_DTYPES]
+
+                if len(numeric_cols) < 2:
+                    raise ValueError(
+                        f"'{method}' yöntemi, tahmin yapabilmek için en az bir başka sayısal kolona daha ihtiyaç duyar.")
+
+                # Sadece sayısal veriyi Pandas'a çevir
+                df_pd_numeric = df.select(numeric_cols).to_pandas()
+
+                # Orijinal kolon isimlerini ve indeksi koru
+                original_index = df_pd_numeric.index
+                original_columns = df_pd_numeric.columns
+
+                if method == "knn_imputer":
+                    # K-NN için ölçeklendirme (scaling) zorunludur
+                    scaler = StandardScaler()
+                    df_scaled = scaler.fit_transform(df_pd_numeric)
+
+                    imputer = KNNImputer(n_neighbors=5)
+                    df_imputed_scaled = imputer.fit_transform(df_scaled)
+
+                    # Ölçeklendirmeyi geri al
+                    df_imputed_unscaled = scaler.inverse_transform(df_imputed_scaled)
+                    df_imputed_pd = pd.DataFrame(df_imputed_unscaled,
+                                                 columns=original_columns,
+                                                 index=original_index)
+
+                else:  # iterative_imputer (MICE)
+                    # MICE (regresyon bazlı) ölçeklendirme gerektirmez
+                    imputer = IterativeImputer(max_iter=10, random_state=0)
+                    df_imputed_values = imputer.fit_transform(df_pd_numeric)
+                    df_imputed_pd = pd.DataFrame(df_imputed_values,
+                                                 columns=original_columns,
+                                                 index=original_index)
+
+                # Doldurulmuş Pandas verisini Polars'a geri çevir
+                df_filled_pl = pl.from_pandas(df_imputed_pd, include_index=False)
+
+                # Orijinal Polars DataFrame'ini, doldurulan sayısal kolonlarla güncelle
+                # Bu, sayısal olmayan (kategorik, tarih) kolonları korur.
+                return df.update(df_filled_pl)
+
+            # === 3️⃣ Basit Yöntemler (compute_fill_value) ===
+            # (mean, median, mode, zero, custom vb.)
             else:
                 fill_val = DataUtils.compute_fill_value(df, column, method, custom_value)
 
                 if fill_val is None:
                     # Eğer hesaplanabilir bir değer yoksa işlem yapma
-                    print(f"[UYARI] '{column}' için {method} yöntemiyle doldurma değeri hesaplanamadı. "
-                          f"Kolon tamamen boş olabilir.")
-                    return df  # no-op
+                    st.warning(f"'{column}' için {method} yöntemiyle doldurma değeri hesaplanamadı. "
+                               f"Kolon tamamen boş olabilir.")
+                    return df  # Değişiklik yapma
 
                 expr = col_expr.fill_null(fill_val)
-
-            return df.with_columns(expr)
+                return df.with_columns(expr)
 
         except Exception as e:
-            raise ValueError(f"{column} sütununda doldurma hatası: {e}")
+            raise ValueError(f"'{column}' sütununda '{method}' yöntemiyle doldurma hatası: {e}")
 
 
 

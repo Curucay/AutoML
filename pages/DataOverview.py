@@ -284,8 +284,6 @@ class DataOverview:
                 st.markdown("📅 Tarih Ayarları (İsteğe bağlı)")
                 extract_parts = st.checkbox("Yıl / Ay / Gün Kolonları Oluştur", key="extract_date_parts")
 
-            # --- Dönüştürme butonu (tüm işlemler burada yapılacak) ---
-            # [DÜZELTME] Buton 'if selected_type...' bloğunun DIŞINA taşındı.
             # Bu sayede her zaman görünür olacak.
             if st.button("🚀 Dönüştürmeyi Uygula", key="apply_type"):
                 try:
@@ -301,7 +299,7 @@ class DataOverview:
                     did_convert = False
                     did_extract = False
 
-                    # === 1. TÜR DÖNÜŞÜMÜ GEREKLİ Mİ? ===
+                    # === 1. TÜR DÖNÜŞÜMÜ ===
                     # Hedef tip, mevcut tipten farklıysa
                     conversion_is_needed = target_dtype_obj and current_dtype_obj != target_dtype_obj
 
@@ -314,7 +312,7 @@ class DataOverview:
 
                     # === 2. TARİH PARÇALAMA GEREKLİ Mİ? ===
                     # Bu blok 'extract_parts' bayrağına bağlı olduğu için
-                    # zaten sadece tarih tiplerinde ve checkbox seçiliyse çalışacaktır.
+                    # zaten sadece tarih tiplerinde ve checkbox seçiliyse çalışır
                     if selected_type in ("date", "datetime") and extract_parts:
                         # (Dönüşüm yeni yapılmış olabilir, df'in son halini kontrol et)
                         current_dtype_after_conv = df.schema[selected_col]
@@ -388,7 +386,7 @@ class DataOverview:
         st.subheader("Örnek Kayıtlar")
         st.dataframe(prof.sample.head(int(sample_n)), use_container_width=True, height=400)
 
-        # === Variables (tek değişken odaklı kart) ===================================
+        # ====================== Variables (tek değişken odaklı kart) ================
         st.markdown("## Değişkenler ")
 
         col_sel, col_blank = st.columns([2, 1])
@@ -619,13 +617,13 @@ class DataOverview:
             with tab1:
                 st.altair_chart(VizUtils.missing_bar(missing_df, dark=_IS_DARK), use_container_width=True)
             with tab2:
-                st.pyplot(VizUtils.missing_matrix(df))
+                st.pyplot(VizUtils.missing_matrix(df), use_container_width=True)
             with tab3:
-                st.pyplot(VizUtils.missing_heatmap(df))
+                st.pyplot(VizUtils.missing_heatmap(df), use_container_width=True)
             with tab4:
-                st.pyplot(VizUtils.missing_dendrogram(df))
+                st.pyplot(VizUtils.missing_dendrogram(df), use_container_width=True)
             with tab5:
-                st.pyplot(VizUtils.missing_corr_plot(df))
+                st.pyplot(VizUtils.missing_corr_plot(df), use_container_width=True)
 
         # ----------------------------------------------------
         # 🧩 Eksik Değer Doldurma Kartı
@@ -657,7 +655,7 @@ class DataOverview:
                 st.markdown("🔍 **Veri Tipi**")
                 st.markdown(
                     f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;"
-                    f"color:#8ab4f8;text-align:center;'>{current_dtype}</div>",
+                    f"color:#8ab4f8;text-align:left;'>{current_dtype}</div>",
                     unsafe_allow_html=True,
                 )
 
@@ -665,7 +663,7 @@ class DataOverview:
                 st.markdown("📉 **Eksik Değer Sayısı**")
                 st.markdown(
                     f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;"
-                    f"color:#f88a8a;text-align:center;'>{missing_count:,}</div>",
+                    f"color:#f88a8a;text-align:left;'>{missing_count:,}</div>",
                     unsafe_allow_html=True,
                 )
 
@@ -684,8 +682,11 @@ class DataOverview:
                     label_visibility="collapsed"
                 )
 
+
+
             # 3️⃣ Koşullu Değer Girişi
             fill_value = None
+            preview_methods = ["mean", "median", "mode", "min", "max", "zero"]
             with c5:
                 if selected_method in ("specific", "custom"):
                     st.markdown("📝 **Doldurulacak Değer**")
@@ -701,6 +702,32 @@ class DataOverview:
                     else:
                         fill_value = st.text_input("Değer", value="NA", key="fill_val_str",
                                                    label_visibility="collapsed")
+                elif selected_method in preview_methods:
+                    try:
+                        preview_value = DataUtils.compute_fill_value(
+                            df, fill_col, selected_method
+                        )
+
+                        if preview_value is not None:
+                            # Değeri formatla
+                            if isinstance(preview_value, float):
+                                preview_val_str = f"{preview_value:,.4f}"
+                            elif isinstance(preview_value, int):
+                                preview_val_str = f"{preview_value:,}"
+                            else:
+                                preview_val_str = str(preview_value)
+
+                            st.markdown("**Hesaplanan Değer**")
+                            st.markdown(
+                                f"<div style='padding:8px; margin-top: 1px; border-radius:6px; background-color:#0E1117;"
+                                f"border:1px solid #444; color:#8ab4f8; text-align:left; font-size: 0.9em;'>"
+                                f"<strong>{preview_val_str}</strong></div>",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.caption("Değer hesaplanamadı (örn: kolon boş).")
+                    except Exception:
+                        st.caption("Değer hesaplanamadı.")
 
             # 4️⃣ Doldurma Uygulama
             if st.button("🚀 Doldurmayı Uygula", key="apply_fill", disabled=(missing_count == 0)):
@@ -724,3 +751,147 @@ class DataOverview:
 
                 except Exception as e:
                     st.error(f"❌ Doldurma hatası: {e}")
+
+                # ----------------------------------------------------
+                # 🎯 Hedef Odaklı Analiz Kartı (Target-Aware)
+                # ----------------------------------------------------
+                with st.container(border=True):
+                    st.markdown("## 🎯 Hedef Odaklı Analiz (Bivariate)")
+                    st.caption(
+                        "Bir hedef değişken seçin; sistem otomatik olarak görev türünü "
+                        "(binary/multiclass/regression) algılasın ve "
+                        "diğer tüm özelliklerle istatistiksel ilişkisini hesaplasın."
+                    )
+
+                    # df = aktif dataframe (yukarıda zaten tanımlı olmalı)
+                    if df is None or df.is_empty():
+                        st.info("Analiz için lütfen önce bir veri seti yükleyin.")
+                        st.stop()
+
+                    # Profil verisinden uygun kolonları al
+                    prof = cache_profile(df, name)
+                    potential_targets = prof.categorical_cols + prof.numeric_cols + prof.datetime_cols
+
+                    if not potential_targets:
+                        st.warning("Veri setinde analiz edilecek uygun (sayısal, kategorik) kolon bulunamadı.")
+                        st.stop()
+
+                    # 1. Hedef Seçimi
+                    sel_target = st.selectbox(
+                        "🎯 Hedef (Target) Değişkeni Seçin",
+                        options=potential_targets,
+                        index=0,
+                        key="__target_aware_select"
+                    )
+
+                    # 2. Analizi Çalıştır Butonu
+                    if st.button("🚀 Hedef Odaklı Analizi Çalıştır", type="primary", use_container_width=True):
+
+                        # 3. Analizi çalıştır (veya önbellekten al)
+                        results_df, task_type = cache_target_analysis(df, sel_target)
+
+                        if results_df is None:
+                            st.error("Analiz çalıştırılamadı. Hedef değişken geçerli değil.")
+                        else:
+                            st.metric("Tespit Edilen Görev Türü (Task Type)", f"**{task_type.upper()}**")
+
+                            # 4. Sonuçları Göster
+                            st.markdown("#### İstatistiksel Analiz Raporu")
+                            st.dataframe(
+                                results_df,
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "feature": "Özellik",
+                                    "feature_type": "Tip",
+                                    "test": "Test",
+                                    "effect": st.column_config.NumberColumn("Etki Büyüklüğü", format="%.3f"),
+                                    "effect_abs": st.column_config.NumberColumn("Etki (Mutlak)", format="%.3f",
+                                                                                help="Sıralama için kullanılır (en güçlü ilişki)"),
+                                    "pvalue": st.column_config.NumberColumn("p-value", format="%.4f"),
+                                    "missing_pct": st.column_config.ProgressColumn("Eksik (%)", format="%.2f%%",
+                                                                                   min_value=0, max_value=100),
+                                    "note": "Not",
+                                    "viz_hint": "Görsel Tipi"
+                                }
+                            )
+
+                            # 5. Görev Türüne Özel Görselleştirme
+                            st.markdown("---")
+                            st.markdown("#### Öne Çıkan Görselleştirmeler")
+
+                            try:
+                                # ----- Binary Görev Görseli (Sizin demo koddaki gibi) -----
+                                if task_type == "binary":
+                                    st.markdown("##### Kategorik Değişkenler vs. Hedef Oranı")
+                                    # Analiz raporundan kategorik kolonları al
+                                    cat_cols = results_df[
+                                        (results_df["feature_type"] == "categorical") &
+                                        (results_df["effect_abs"].notna())
+                                        ]["feature"].tolist()
+
+                                    if cat_cols:
+                                        sel_cat_feat = st.selectbox("Görselleştirmek için bir özellik seçin", cat_cols)
+
+                                        # Veriyi hazırla (Polars -> Pandas)
+                                        x = df[sel_cat_feat].cast(pl.Utf8).fill_null("NA")
+                                        y = df[sel_target]
+                                        y01 = _to_binary01(y.to_pandas())
+                                        pdf = pd.DataFrame({sel_cat_feat: x.to_pandas(), sel_target: y01})
+
+                                        grp = (pdf.groupby(sel_cat_feat)[sel_target]
+                                               .agg(["count", "mean"])
+                                               .rename(columns={"count": "n", "mean": "target_rate"})
+                                               .reset_index())
+
+                                        # Altair Grafiği
+                                        ch = (alt.Chart(grp).mark_bar()
+                                              .encode(
+                                            x=alt.X("target_rate:Q", title=f"'{sel_target}=1' Oranı",
+                                                    scale=alt.Scale(domain=[0, 1])),
+                                            y=alt.Y(f"{sel_cat_feat}:N", sort="-x", title=sel_cat_feat),
+                                            tooltip=[sel_cat_feat, "n:Q", alt.Tooltip("target_rate:Q", format=".2%")]
+                                        ).properties(height=max(200, min(500, grp.shape[0] * 25))))  # Dinamik yükseklik
+
+                                        st.altair_chart(ch, use_container_width=True)
+
+                                    else:
+                                        st.info("Bu görev için uygun kategorik özellik bulunamadı.")
+
+                                # ----- Regression Görev Görseli -----
+                                elif task_type == "regression":
+                                    st.markdown("##### Sayısal Değişkenler vs. Hedef")
+                                    # Rapordaki en güçlü ilişkili sayısal kolonu al
+                                    num_cols = results_df[
+                                        (results_df["feature_type"] == "numeric") &
+                                        (results_df["effect_abs"].notna())
+                                        ]["feature"].tolist()
+
+                                    if num_cols:
+                                        sel_num_feat = st.selectbox("Görselleştirmek için bir özellik seçin", num_cols)
+
+                                        # Polars'tan Pandas'a
+                                        pdf_sample = df.select([sel_num_feat, sel_target]).sample(
+                                            n=min(5000, df.height)).to_pandas()
+
+                                        # Altair Scatter Plot
+                                        ch = (alt.Chart(pdf_sample).mark_circle(opacity=0.5)
+                                              .encode(
+                                            x=alt.X(sel_num_feat, title=sel_num_feat),
+                                            y=alt.Y(sel_target, title=sel_target),
+                                            tooltip=[sel_num_feat, sel_target]
+                                        ).properties(title=f"{sel_target} vs {sel_num_feat} (5k örneklem)")
+                                              .interactive())
+
+                                        st.altair_chart(
+                                            ch + ch.transform_regression(sel_num_feat, sel_target).mark_line(
+                                                color="red"), use_container_width=True)
+                                    else:
+                                        st.info("Bu görev için uygun sayısal özellik bulunamadı.")
+
+                                else:
+                                    st.info(
+                                        f"'{task_type}' görev türü için otomatik görselleştirme henüz tanımlanmadı.")
+
+                            except Exception as e:
+                                st.error(f"Görselleştirme hatası: {e}")

@@ -1,11 +1,10 @@
 import polars as pl
-import numpy as np
 import pandas as pd
-import altair as alt
 import seaborn as sns
+import altair as alt
 import matplotlib.pyplot as plt
 import missingno as msno
-import networkx as nx
+import plotly.express as px
 
 class VizUtils:
     @staticmethod
@@ -475,10 +474,35 @@ class VizUtils:
     @staticmethod
     def missing_heatmap(df: pl.DataFrame):
         pdf = df.to_pandas()
-        fig, ax = plt.subplots(figsize=(10, 8))
-        msno.heatmap(pdf.sample(min(10000, len(pdf))), ax=ax)
-        ax.set_title("Eksik Değer Korelasyon Haritası", fontsize=13)
+
+        # 1. FİGÜR BOYUTU
+        fig, ax = plt.subplots(figsize=(6, 2))
+        # 2. MSNO.HEATMAP
+        msno.heatmap(
+            pdf.sample(min(10000, len(pdf))),
+            ax=ax,
+            fontsize=6  # Eksen font boyutu
+        )
+        ax.set_title("Eksik Değer Korelasyon Haritası", fontsize=7, fontweight="bold")
+        # --- CBAR KÜÇÜLTME KISMI (YENİ) ---
+        try:
+            # 3. Colorbar'ı figür'ün eksen listesinden yakala
+            cbar_ax = fig.axes[-1]
+            # 4. Mevcut pozisyonunu (Bbox nesnesi) al
+            pos = cbar_ax.get_position()
+            # 5. Yeni yüksekliği ve konumu hesapla
+            new_height = pos.height * 0.6  # Yüksekliği %60'a küçült (burayı ayarlayabilirsiniz)
+            # Dikeyde ortala: (mevcut alt + (eski yükseklik - yeni yükseklik) / 2)
+            new_bottom = pos.y0 + (pos.height - new_height) / 2
+            # 6. Colorbar'a yeni pozisyonunu ata: [sol, alt, genişlik, yükseklik]
+            cbar_ax.set_position([pos.x0, new_bottom, pos.width, new_height])
+            # 7. Colorbar'ın fontunu küçült
+            cbar_ax.tick_params(labelsize=4)
+        except IndexError:
+            # Colorbar bulunamazsa hata ver
+            pass
         return fig
+
 
     # Dendrogram (Missingno)
     @staticmethod
@@ -506,12 +530,27 @@ class VizUtils:
 
     # Eksik Korelasyon Plotu (Correlation Plot)
     @staticmethod
-    def missing_corr_plot(df: pl.DataFrame):
+    def missing_corr_plot(df: pl.DataFrame, ):
         pdf = df.select([pl.col(c).is_null().cast(pl.Int8).alias(c) for c in df.columns]).to_pandas()
         corr = pdf.corr()
 
-        fig, ax = plt.subplots(figsize=(10, 8))
-        sns.heatmap(corr, cmap="Reds", linewidths=0.5, ax=ax)
-        ax.set_title("Eksik Değer Korelasyon Grafiği", fontsize=10)
+        # CBAR AYARLARI:
+        cbar_options = {
+            "shrink": 0.6,  # Figür biraz büyüdüğü için bunu da %60'e çekebiliriz
+            "aspect": 60,
+            "pad": 0.04
+        }
+
+        fig, ax = plt.subplots(figsize=(6, 3))
+        sns.heatmap(corr, cmap="Reds", linewidths=0.5, ax=ax, cbar_kws=cbar_options)
+
+        ax.set_title("Eksik Değer Korelasyon Grafiği", fontsize=6)
+
+        ax.set_xticklabels(ax.get_xticklabels(), fontsize=5, rotation=45, ha="right")
+        ax.set_yticklabels(ax.get_yticklabels(), fontsize=5, rotation=0)
+        cbar_ax = fig.axes[-1]
+        cbar_ax.tick_params(labelsize=4)
+
+        fig.tight_layout()
         return fig
 
