@@ -835,6 +835,271 @@ class DataUtils:
         except Exception as e:
             raise ValueError(f"'{column}' sütununda '{method}' yöntemiyle doldurma hatası: {e}")
 
+    @staticmethod
+    def drop_columns(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
+        """
+        Verilen kolonları KESİN olarak siler.
+        - cols boşsa dokunmaz.
+        - DF'te bulunmayan bir kolon varsa HATA verir.
+        """
+        if not cols:
+            return df
 
+        missing = [c for c in cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"Bulunamayan sütun(lar): {missing}")
 
+        return df.drop(cols)
 
+    @staticmethod
+    def quantile_bounds_summary(
+            df: pl.DataFrame,
+            cols: list[str],
+            q_low: float = 0.25,
+            q_high: float = 0.75,
+            keep_nulls: bool = True,
+    ) -> pl.DataFrame:
+        """
+        Seçili sayısal sütunlar için alt/üst yüzdelik değerlerini ve aralığa göre
+        satır dağılımlarını özetler. (Filtre uygulamaz)
+        Dönüş: pl.DataFrame:
+          column | q_low | q_high | q_low_val | q_high_val | in_range | below | above | nulls
+        """
+        if not cols:
+            return pl.DataFrame({
+                "column": [], "q_low": [], "q_high": [],
+                "q_low_val": [], "q_high_val": [],
+                "in_range": [], "below": [], "above": [], "nulls": []
+            })
+
+        if not (0.0 <= q_low < q_high <= 1.0):
+            raise ValueError("q_low ve q_high 0-1 aralığında olmalı ve q_low < q_high olmalı.")
+
+        # Sadece sayısal sütunları işle
+        numeric_types = (
+            pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+            pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+            pl.Float32, pl.Float64
+        )
+        use_cols = [c for c in cols if df.schema.get(c) in numeric_types]
+        if not use_cols:
+            raise ValueError("Seçilen sütunların hiçbiri sayısal değil.")
+
+        rows = []
+        n = df.height
+        for c in use_cols:
+            s = df[c].cast(pl.Float64, strict=False)
+            s_nonnull = s.drop_nulls()
+            if s_nonnull.is_empty():
+                # Tamamı null ise anlamlı eşik üretemez; yine de çıkışa ekleyelim
+                rows.append({
+                    "column": c, "q_low": q_low, "q_high": q_high,
+                    "q_low_val": None, "q_high_val": None,
+                    "in_range": 0, "below": 0, "above": 0, "nulls": int(s.null_count())
+                })
+                continue
+
+            lo = float(s_nonnull.quantile(q_low))
+            hi = float(s_nonnull.quantile(q_high))
+            # Kapsayıcı aralık [lo, hi]
+            in_range_mask = s.is_between(lo, hi, closed="both")
+            if keep_nulls:
+                in_range_mask = in_range_mask | s.is_null()
+
+            in_range = int(in_range_mask.sum())
+            nulls = int(s.is_null().sum())
+            below = int((s < lo).sum())
+            above = int((s > hi).sum())
+
+            rows.append({
+                "column": c, "q_low": q_low, "q_high": q_high,
+                "q_low_val": lo, "q_high_val": hi,
+                "in_range": in_range, "below": below, "above": above, "nulls": nulls
+            })
+
+        return pl.DataFrame(rows)
+
+    @staticmethod
+    def remove_outliers_quantile(
+            df: pl.DataFrame,
+            cols: list[str],
+            q_low: float = 0.25,
+            q_high: float = 0.75,
+            how: str = "any",  # "any" => herhangi bir seçili kolonda [lo,hi] dışında ise satırı sil
+            # "all" => tüm seçili kolonlarda [lo,hi] dışında ise sil
+            keep_nulls: bool = True,  # True => null hücreler filtreyi geçer
+            return_summary: bool = True,
+    ):
+        """
+        Yüzdelik aralığına göre satırları temizler.
+        Aralık: [q_low, q_high] yüzdeliklerinin değerleri (kapsayıcı).
+        Dönüş: df_filtered (ve return_summary=True ise summary DF)
+        """
+        if not cols:
+            return (df, DataUtils.quantile_bounds_summary(df, [], q_low, q_high, keep_nulls)) if return_summary else df
+
+        if not (0.0 <= q_low < q_high <= 1.0):
+            raise ValueError("q_low ve q_high 0-1 aralığında olmalı ve q_low < q_high olmalı.")
+
+        # Özet ve eşikler
+        summary = DataUtils.quantile_bounds_summary(df, cols, q_low, q_high, keep_nulls=False)
+
+        # Koşulları hazırla (özet DF'ten lo/hi çek)
+        conds = []
+        for row in summary.iter_rows(named=True):
+            c = row["column"]
+            lo = row["q_low_val"]
+            hi = row["q_high_val"]
+            # Null quantile (tümü null vs.) ise bu kolonu yok say
+            if lo is None or hi is None or not np.isfinite(lo) or not np.isfinite(hi):
+                continue
+            in_range = pl.col(c).cast(pl.Float64, strict=False).is_between(lo, hi, closed="both")
+            conds.append(in_range | pl.col(c).is_null() if keep_nulls else in_range)
+
+        if not conds:
+            # Eşik üretilemediyse dokunma
+            return (df, summary) if return_summary else df
+
+        # any -> tüm kolonlarda "in_range" koşullarını AND'le (biri dışındaysa satırı kaldır)
+        # all -> en az birinde "in_range" ise kalsın; hiçbiri değilse kaldır (yani OR)
+        mask = (pl.all_horizontal(conds) if how == "any" else pl.any_horizontal(conds))
+        df_new = df.filter(mask)
+
+        return (df_new, summary) if return_summary else df_new
+
+    @staticmethod
+    def _value_counts(df: pl.DataFrame, col: str, cast_to_utf8: bool = True) -> pl.DataFrame:
+        s = df[col]
+        if cast_to_utf8:
+            s = s.cast(pl.Utf8, strict=False)
+        vc = s.value_counts(sort=True)  # -> DataFrame: [col, "count"]
+        total = int(vc["count"].sum())
+        vc = vc.with_columns((pl.col("count") / total).alias("freq"))
+        return vc
+
+    @staticmethod
+    def rare_summary(
+            df: pl.DataFrame,
+            cols: List[str],
+            *,
+            min_count: Optional[int] = None,  # örn. < 10
+            min_freq: Optional[float] = None,  # 0-1 arası (örn. < 0.01 = %1)
+            top_k: Optional[int] = None,  # örn. ilk 10 kalsın, diğerleri "Diğer"
+            other_label: str = "Diğer",
+            cast_to_utf8: bool = True,  # tip çakışmalarını önlemek için string'e taşı
+            rare_examples_limit: int = 5,
+    ) -> pl.DataFrame:
+        """
+        UYGULAMA YAPMADAN özet üretir.
+        Kolon bazında: toplam satır, benzersiz değer sayısı, 'rare' grubuna düşecek kategori adedi/satır adedi vb.
+        Dönüş DF kolonları:
+          column | criterion | threshold | unique_total | unique_keep | unique_rare
+                 | rows_keep | rows_rare | other_label | rare_examples
+        """
+        if not cols:
+            return pl.DataFrame({
+                "column": [], "criterion": [], "threshold": [], "unique_total": [],
+                "unique_keep": [], "unique_rare": [], "rows_keep": [], "rows_rare": [],
+                "other_label": [], "rare_examples": []
+            })
+
+        rows = []
+        for c in cols:
+            vc = DataUtils._value_counts(df, c, cast_to_utf8=cast_to_utf8)  # [c, count, freq]
+            if vc.height == 0:
+                rows.append({
+                    "column": c, "criterion": None, "threshold": None,
+                    "unique_total": 0, "unique_keep": 0, "unique_rare": 0,
+                    "rows_keep": 0, "rows_rare": 0, "other_label": other_label,
+                    "rare_examples": ""
+                })
+                continue
+
+            crit = "top_k" if top_k is not None else ("min_count" if min_count is not None else "min_freq")
+            if top_k is not None:
+                keep_df = vc.sort("count", descending=True).head(top_k)
+                threshold_val = top_k
+            elif min_count is not None:
+                keep_df = vc.filter(pl.col("count") >= min_count)
+                threshold_val = min_count
+            else:
+                if min_freq is None:
+                    raise ValueError("min_count, min_freq veya top_k parametrelerinden en az biri verilmelidir.")
+                keep_df = vc.filter(pl.col("freq") >= min_freq)
+                threshold_val = float(min_freq)
+
+            keep_values = set(keep_df[c].to_list())
+            all_values = set(vc[c].to_list())
+            rare_values = list(all_values - keep_values)
+            # Örnekler
+            rare_examples = ", ".join([str(x) for x in rare_values[:rare_examples_limit]])
+
+            rows_keep = int(vc.filter(pl.col(c).is_in(list(keep_values)))["count"].sum())
+            rows_rare = int(vc.filter(~pl.col(c).is_in(list(keep_values)))["count"].sum())
+
+            rows.append({
+                "column": c,
+                "criterion": crit,
+                "threshold": threshold_val,
+                "unique_total": vc.height,
+                "unique_keep": len(keep_values),
+                "unique_rare": len(rare_values),
+                "rows_keep": rows_keep,
+                "rows_rare": rows_rare,
+                "other_label": other_label,
+                "rare_examples": rare_examples
+            })
+
+        return pl.DataFrame(rows)
+
+    @staticmethod
+    def rare_collapse(
+            df: pl.DataFrame,
+            cols: List[str],
+            *,
+            min_count: Optional[int] = None,
+            min_freq: Optional[float] = None,
+            top_k: Optional[int] = None,
+            other_label: str = "Diğer",
+            cast_to_utf8: bool = True,
+            return_summary: bool = True
+    ) -> Tuple[pl.DataFrame, Optional[pl.DataFrame]]:
+        """
+        Az görülen kategorileri 'other_label' altında toplar.
+        En az bir kriter verilmelidir (min_count | min_freq | top_k).
+        """
+        if not cols:
+            return (df, None) if return_summary else (df, None)
+
+        # Ön özet (eşikleri ve rare setlerini türetmek için)
+        summary = DataUtils.rare_summary(
+            df, cols, min_count=min_count, min_freq=min_freq, top_k=top_k,
+            other_label=other_label, cast_to_utf8=cast_to_utf8
+        )
+
+        df_new = df
+        for row in summary.iter_rows(named=True):
+            c = row["column"]
+            vc = DataUtils._value_counts(df_new, c, cast_to_utf8=cast_to_utf8)
+
+            # Keep set
+            if row["criterion"] == "top_k":
+                keep_df = vc.sort("count", descending=True).head(int(row["threshold"]))
+            elif row["criterion"] == "min_count":
+                keep_df = vc.filter(pl.col("count") >= int(row["threshold"]))
+            else:
+                keep_df = vc.filter(pl.col("freq") >= float(row["threshold"]))
+
+            keep_values = set(keep_df[c].to_list())
+
+            # Dönüştürücü ifade
+            base_expr = pl.col(c).cast(pl.Utf8, strict=False) if cast_to_utf8 else pl.col(c)
+            expr = (
+                pl.when(base_expr.is_in(list(keep_values)))
+                .then(base_expr)
+                .otherwise(pl.lit(other_label))
+                .alias(c)
+            )
+            df_new = df_new.with_columns(expr)
+
+        return (df_new, summary if return_summary else None)

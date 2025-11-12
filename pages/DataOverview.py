@@ -635,263 +635,397 @@ class DataOverview:
 
             if not missing_cols:
                 st.success("✅ Veri setinde eksik değer bulunmuyor.")
-                st.stop()
-
-            # 1️⃣ Kolon Seçimi + Bilgiler
-            c1, c2, c3 = st.columns([2, 2, 2])
-            with c1:
-                st.markdown("🎯 **Doldurulacak Kolon**")
-                fill_col = st.selectbox(
-                    "Doldurulacak Kolon",
-                    missing_cols,
-                    key="fill_col",
-                    label_visibility="collapsed"
-                )
-
-            current_dtype = df.schema[fill_col]
-            missing_count = df[fill_col].null_count()
-
-            with c2:
-                st.markdown("🔍 **Veri Tipi**")
-                st.markdown(
-                    f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;"
-                    f"color:#8ab4f8;text-align:left;'>{current_dtype}</div>",
-                    unsafe_allow_html=True,
-                )
-
-            with c3:
-                st.markdown("📉 **Eksik Değer Sayısı**")
-                st.markdown(
-                    f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;"
-                    f"color:#f88a8a;text-align:left;'>{missing_count:,}</div>",
-                    unsafe_allow_html=True,
-                )
-
-            # 2️⃣ Geçerli Yöntemleri Al
-            all_methods = DataUtils.get_fill_methods()
-            valid_methods = DataUtils.suggest_fill_methods(current_dtype)
-
-            c4, c5 = st.columns([2, 2])
-            with c4:
-                st.markdown("🛠️ **Doldurma Yöntemi**")
-                selected_method = st.selectbox(
-                    "Doldurma Yöntemi",
-                    options=[m for m in all_methods.keys() if m in valid_methods],
-                    format_func=lambda k: all_methods[k],
-                    key="fill_method",
-                    label_visibility="collapsed"
-                )
-
-
-
-            # 3️⃣ Koşullu Değer Girişi
-            fill_value = None
-            preview_methods = ["mean", "median", "mode", "min", "max", "zero"]
-            with c5:
-                if selected_method in ("specific", "custom"):
-                    st.markdown("📝 **Doldurulacak Değer**")
-                    if current_dtype in pl.NUMERIC_DTYPES:
-                        fill_value = st.number_input("Değer", value=0, key="fill_val_num", label_visibility="collapsed")
-                    elif current_dtype == pl.Boolean:
-                        fill_value = st.selectbox("Değer", [True, False], key="fill_val_bool",
-                                                  label_visibility="collapsed")
-                    elif current_dtype == pl.Date:
-                        fill_value = st.date_input("Değer", key="fill_val_date", label_visibility="collapsed")
-                    elif current_dtype == pl.Datetime:
-                        fill_value = st.datetime_input("Değer", key="fill_val_datetime", label_visibility="collapsed")
-                    else:
-                        fill_value = st.text_input("Değer", value="NA", key="fill_val_str",
-                                                   label_visibility="collapsed")
-                elif selected_method in preview_methods:
-                    try:
-                        preview_value = DataUtils.compute_fill_value(
-                            df, fill_col, selected_method
-                        )
-
-                        if preview_value is not None:
-                            # Değeri formatla
-                            if isinstance(preview_value, float):
-                                preview_val_str = f"{preview_value:,.4f}"
-                            elif isinstance(preview_value, int):
-                                preview_val_str = f"{preview_value:,}"
-                            else:
-                                preview_val_str = str(preview_value)
-
-                            st.markdown("**Hesaplanan Değer**")
-                            st.markdown(
-                                f"<div style='padding:8px; margin-top: 1px; border-radius:6px; background-color:#0E1117;"
-                                f"border:1px solid #444; color:#8ab4f8; text-align:left; font-size: 0.9em;'>"
-                                f"<strong>{preview_val_str}</strong></div>",
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            st.caption("Değer hesaplanamadı (örn: kolon boş).")
-                    except Exception:
-                        st.caption("Değer hesaplanamadı.")
-
-            # 4️⃣ Doldurma Uygulama
-            if st.button("🚀 Doldurmayı Uygula", key="apply_fill", disabled=(missing_count == 0)):
-                try:
-                    before = df[fill_col].null_count()
-
-                    df = DataUtils.fill_missing(df, fill_col, selected_method, fill_value)
-                    after = df[fill_col].null_count()
-
-                    st.session_state[DataOverview.SESSION_KEY_DATASETS][name] = df
-                    st.session_state["__profile_dirty__"] = True
-
-                    st.success(
-                        f"✅ '{fill_col}' kolonundaki {before:,} eksik değer "
-                        f"'{all_methods[selected_method]}' yöntemiyle dolduruldu. "
-                        f"Kalan eksik: {after:,}"
+            else:
+                # 1️⃣ Kolon Seçimi + Bilgiler
+                c1, c2, c3 = st.columns([2, 2, 2])
+                with c1:
+                    st.markdown("🎯 **Doldurulacak Kolon**")
+                    fill_col = st.selectbox(
+                        "Doldurulacak Kolon",
+                        missing_cols,
+                        key="fill_col",
+                        label_visibility="collapsed"
                     )
 
-                    st.dataframe(df[[fill_col]].head(10), use_container_width=True)
+                current_dtype = df.schema[fill_col]
+                missing_count = df[fill_col].null_count()
+
+                with c2:
+                    st.markdown("🔍 **Veri Tipi**")
+                    st.markdown(
+                        f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;"
+                        f"color:#8ab4f8;text-align:left;'>{current_dtype}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                with c3:
+                    st.markdown("📉 **Eksik Değer Sayısı**")
+                    st.markdown(
+                        f"<div style='padding:8px;border-radius:6px;background-color:#0E1117;border:1px solid #444;"
+                        f"color:#f88a8a;text-align:left;'>{missing_count:,}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                # 2️⃣ Geçerli Yöntemleri Al
+                all_methods = DataUtils.get_fill_methods()
+                valid_methods = DataUtils.suggest_fill_methods(current_dtype)
+
+                c4, c5 = st.columns([2, 2])
+                with c4:
+                    st.markdown("🛠️ **Doldurma Yöntemi**")
+                    selected_method = st.selectbox(
+                        "Doldurma Yöntemi",
+                        options=[m for m in all_methods.keys() if m in valid_methods],
+                        format_func=lambda k: all_methods[k],
+                        key="fill_method",
+                        label_visibility="collapsed"
+                    )
+
+                # 3️⃣ Koşullu Değer Girişi
+                fill_value = None
+                preview_methods = ["mean", "median", "mode", "min", "max", "zero"]
+                with c5:
+                    if selected_method in ("specific", "custom"):
+                        st.markdown("📝 **Doldurulacak Değer**")
+                        if current_dtype in pl.NUMERIC_DTYPES:
+                            fill_value = st.number_input("Değer", value=0, key="fill_val_num", label_visibility="collapsed")
+                        elif current_dtype == pl.Boolean:
+                            fill_value = st.selectbox("Değer", [True, False], key="fill_val_bool",
+                                                      label_visibility="collapsed")
+                        elif current_dtype == pl.Date:
+                            fill_value = st.date_input("Değer", key="fill_val_date", label_visibility="collapsed")
+                        elif current_dtype == pl.Datetime:
+                            fill_value = st.datetime_input("Değer", key="fill_val_datetime", label_visibility="collapsed")
+                        else:
+                            fill_value = st.text_input("Değer", value="NA", key="fill_val_str",
+                                                       label_visibility="collapsed")
+                    elif selected_method in preview_methods:
+                        try:
+                            preview_value = DataUtils.compute_fill_value(
+                                df, fill_col, selected_method
+                            )
+
+                            if preview_value is not None:
+                                # Değeri formatla
+                                if isinstance(preview_value, float):
+                                    preview_val_str = f"{preview_value:,.4f}"
+                                elif isinstance(preview_value, int):
+                                    preview_val_str = f"{preview_value:,}"
+                                else:
+                                    preview_val_str = str(preview_value)
+
+                                st.markdown("**Hesaplanan Değer**")
+                                st.markdown(
+                                    f"<div style='padding:8px; margin-top: 1px; border-radius:6px; background-color:#0E1117;"
+                                    f"border:1px solid #444; color:#8ab4f8; text-align:left; font-size: 0.9em;'>"
+                                    f"<strong>{preview_val_str}</strong></div>",
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                st.caption("Değer hesaplanamadı (örn: kolon boş).")
+                        except Exception:
+                            st.caption("Değer hesaplanamadı.")
+
+                # 4️⃣ Doldurma Uygulama
+                if st.button("🚀 Doldurmayı Uygula", key="apply_fill", disabled=(missing_count == 0)):
+                    try:
+                        before = df[fill_col].null_count()
+
+                        df = DataUtils.fill_missing(df, fill_col, selected_method, fill_value)
+                        after = df[fill_col].null_count()
+
+                        st.session_state[DataOverview.SESSION_KEY_DATASETS][name] = df
+                        st.session_state["__profile_dirty__"] = True
+
+                        st.success(
+                            f"✅ '{fill_col}' kolonundaki {before:,} eksik değer "
+                            f"'{all_methods[selected_method]}' yöntemiyle dolduruldu. "
+                            f"Kalan eksik: {after:,}"
+                        )
+
+                        st.dataframe(df[[fill_col]].head(10), use_container_width=True)
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"❌ Doldurma hatası: {e}")
+
+        # ----------------------------------------------------
+        # 🧹 Sütun Silme Kartı
+        # ----------------------------------------------------
+        with st.container(border=True):
+            st.markdown("## 🧹 Sütun Sil (Drop)")
+
+            all_cols = list(df.columns)
+            cols_to_drop = st.multiselect(
+                "Silinecek sütun(lar)",
+                options=all_cols,
+                help="Bir veya birden fazla sütun seçin."
+            )
+
+            drop_btn = st.button(
+                "🗑️ Seçili sütunları sil",
+                type="primary",
+                use_container_width=True,
+                disabled=(len(cols_to_drop) == 0)
+            )
+
+            if drop_btn:
+                try:
+                    before_cols = len(df.columns)
+                    df_new = DataUtils.drop_columns(df, cols=cols_to_drop)
+                    after_cols = len(df_new.columns)
+
+                    # Aktif dataset'i güncelleyin (projede kullandığınız değişken adına uyarlayın)
+                    st.session_state[DataOverview.SESSION_KEY_DATASETS][active_name] = df_new
+
+                    st.cache_data.clear()
                     st.rerun()
 
                 except Exception as e:
-                    st.error(f"❌ Doldurma hatası: {e}")
+                    st.error(f"❌ Silme hatası: {e}")
 
-                # ----------------------------------------------------
-                # 🎯 Hedef Odaklı Analiz Kartı (Target-Aware)
-                # ----------------------------------------------------
-                with st.container(border=True):
-                    st.markdown("## 🎯 Hedef Odaklı Analiz (Bivariate)")
-                    st.caption(
-                        "Bir hedef değişken seçin; sistem otomatik olarak görev türünü "
-                        "(binary/multiclass/regression) algılasın ve "
-                        "diğer tüm özelliklerle istatistiksel ilişkisini hesaplasın."
+        # ----------------------------------------------------
+        # ✂️ Aykırı Değer Temizleme Kartı
+        # ----------------------------------------------------
+        with st.container(border=True):
+            st.markdown("## ✂️ Aykırı Değer Temizleme · Yüzdelik (Quantile) Aralığı")
+
+            # 1) Sayısal kolonlar
+            numeric_cols = [c for c, dt in zip(df.columns, df.dtypes)
+                            if dt in (pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+                                      pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+                                      pl.Float32, pl.Float64)]
+
+            if not numeric_cols:
+                st.info("Bu veri setinde sayısal sütun bulunamadı.")
+            else:
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    sel_cols = st.multiselect(
+                        "İşlenecek sayısal sütun(lar)",
+                        options=numeric_cols,
+                        help="Seçili sütunlara aşağıdaki yüzdelik aralığı uygulanacaktır."
                     )
-
-                    # df = aktif dataframe (yukarıda zaten tanımlı olmalı)
-                    if df is None or df.is_empty():
-                        st.info("Analiz için lütfen önce bir veri seti yükleyin.")
-                        st.stop()
-
-                    # Profil verisinden uygun kolonları al
-                    prof = cache_profile(df, name)
-                    potential_targets = prof.categorical_cols + prof.numeric_cols + prof.datetime_cols
-
-                    if not potential_targets:
-                        st.warning("Veri setinde analiz edilecek uygun (sayısal, kategorik) kolon bulunamadı.")
-                        st.stop()
-
-                    # 1. Hedef Seçimi
-                    sel_target = st.selectbox(
-                        "🎯 Hedef (Target) Değişkeni Seçin",
-                        options=potential_targets,
-                        index=0,
-                        key="__target_aware_select"
+                with c2:
+                    how_label = st.radio(
+                        "Satır silme kuralı",
+                        options=["Herhangi birinde dışarıdaysa sil", "Hepsinde dışarıdaysa sil"],
+                        horizontal=False,
+                        index=0
                     )
+                    how_mode = "any" if how_label.startswith("Herhangi") else "all"
 
-                    # 2. Analizi Çalıştır Butonu
-                    if st.button("🚀 Hedef Odaklı Analizi Çalıştır", type="primary", use_container_width=True):
+                # 2) Yüzdelik seçimi (0-100)
+                p1, p2 = st.columns(2)
+                with p1:
+                    ql_pct = st.number_input("Alt yüzdelik (0-100)", min_value=0.0, max_value=100.0, value=5.0,
+                                             step=0.5)
+                with p2:
+                    qh_pct = st.number_input("Üst yüzdelik (0-100)", min_value=0.0, max_value=100.0, value=95.0,
+                                             step=0.5)
 
-                        # 3. Analizi çalıştır (veya önbellekten al)
-                        results_df, task_type = cache_target_analysis(df, sel_target)
+                # Geçerlilik
+                if ql_pct >= qh_pct:
+                    st.warning("Alt yüzdelik, üst yüzdelikten küçük olmalı.")
+                ql = float(ql_pct) / 100.0
+                qh = float(qh_pct) / 100.0
 
-                        if results_df is None:
-                            st.error("Analiz çalıştırılamadı. Hedef değişken geçerli değil.")
-                        else:
-                            st.metric("Tespit Edilen Görev Türü (Task Type)", f"**{task_type.upper()}**")
+                # 3) Canlı özet tablosu (eşikler ve kapsanan aralık)
+                if sel_cols and ql < qh:
+                    summary_df = DataUtils.quantile_bounds_summary(df, cols=sel_cols, q_low=ql, q_high=qh,
+                                                                   keep_nulls=True)
 
-                            # 4. Sonuçları Göster
-                            st.markdown("#### İstatistiksel Analiz Raporu")
-                            st.dataframe(
-                                results_df,
-                                use_container_width=True,
-                                hide_index=True,
-                                column_config={
-                                    "feature": "Özellik",
-                                    "feature_type": "Tip",
-                                    "test": "Test",
-                                    "effect": st.column_config.NumberColumn("Etki Büyüklüğü", format="%.3f"),
-                                    "effect_abs": st.column_config.NumberColumn("Etki (Mutlak)", format="%.3f",
-                                                                                help="Sıralama için kullanılır (en güçlü ilişki)"),
-                                    "pvalue": st.column_config.NumberColumn("p-value", format="%.4f"),
-                                    "missing_pct": st.column_config.ProgressColumn("Eksik (%)", format="%.2f%%",
-                                                                                   min_value=0, max_value=100),
-                                    "note": "Not",
-                                    "viz_hint": "Görsel Tipi"
-                                }
-                            )
+                    # Kullanıcıya anlaşılır "dahil edilen aralık" metni
+                    st.caption("Dahil edilen aralık: [alt_eşik, üst_eşik] (kapsayıcı) + null değerler")
+                    display_df = (
+                        summary_df
+                        .with_columns([
+                            (pl.col("q_low") * 100).round(2).alias("q_low(%)"),
+                            (pl.col("q_high") * 100).round(2).alias("q_high(%)"),
+                            pl.col("q_low_val").round(4).alias("_lo4"),
+                            pl.col("q_high_val").round(4).alias("_hi4"),
+                        ])
+                        .with_columns([
+                            pl.concat_str([
+                                pl.lit("["),
+                                pl.when(pl.col("_lo4").is_null()).then(pl.lit("null")).otherwise(
+                                    pl.col("_lo4").cast(pl.Utf8)),
+                                pl.lit(", "),
+                                pl.when(pl.col("_hi4").is_null()).then(pl.lit("null")).otherwise(
+                                    pl.col("_hi4").cast(pl.Utf8)),
+                                pl.lit("]")
+                            ]).alias("dahil_aralık")
+                        ])
+                        .select([
+                            "column", "q_low(%)", "q_high(%)", "_lo4", "_hi4", "dahil_aralık",
+                            "in_range", "below", "above", "nulls"
+                        ])
+                        .rename({
+                            "column": "sütun", "_lo4": "alt_eşik", "_hi4": "üst_eşik",
+                            "in_range": "aralıkta", "below": "altında", "above": "üstünde", "nulls": "null"
+                        })
+                        .to_pandas()
+                    )
+                    st.dataframe(display_df, use_container_width=True, hide_index=True, height=260)
 
-                            # 5. Görev Türüne Özel Görselleştirme
-                            st.markdown("---")
-                            st.markdown("#### Öne Çıkan Görselleştirmeler")
+                # 4) Uygula
+                run = st.button(
+                    "🚀 Yüzdelik Aralığına Göre Temizle",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=(len(sel_cols) == 0 or ql_pct >= qh_pct)
+                )
 
-                            try:
-                                # ----- Binary Görev Görseli (Sizin demo koddaki gibi) -----
-                                if task_type == "binary":
-                                    st.markdown("##### Kategorik Değişkenler vs. Hedef Oranı")
-                                    # Analiz raporundan kategorik kolonları al
-                                    cat_cols = results_df[
-                                        (results_df["feature_type"] == "categorical") &
-                                        (results_df["effect_abs"].notna())
-                                        ]["feature"].tolist()
+                if run:
+                    try:
+                        before = df.height
+                        df_new, summary_df = DataUtils.remove_outliers_quantile(
+                            df, cols=sel_cols, q_low=ql, q_high=qh, how=how_mode, keep_nulls=True, return_summary=True
+                        )
+                        after = df_new.height
+                        removed = before - after
 
-                                    if cat_cols:
-                                        sel_cat_feat = st.selectbox("Görselleştirmek için bir özellik seçin", cat_cols)
+                        # Aktif dataset'i güncelle
+                        st.session_state[DataOverview.SESSION_KEY_DATASETS][name] = df_new
+                        st.session_state["__profile_dirty__"] = True
 
-                                        # Veriyi hazırla (Polars -> Pandas)
-                                        x = df[sel_cat_feat].cast(pl.Utf8).fill_null("NA")
-                                        y = df[sel_target]
-                                        y01 = _to_binary01(y.to_pandas())
-                                        pdf = pd.DataFrame({sel_cat_feat: x.to_pandas(), sel_target: y01})
+                        st.success(f"✅ {ql_pct:.1f}%–{qh_pct:.1f}% yüzdelik aralığıyla {removed:,} satır temizlendi. "
+                                   f"Yeni boyut: {after:,} × {df_new.width:,}")
 
-                                        grp = (pdf.groupby(sel_cat_feat)[sel_target]
-                                               .agg(["count", "mean"])
-                                               .rename(columns={"count": "n", "mean": "target_rate"})
-                                               .reset_index())
+                        with st.expander("Kullanılan eşikler ve dağılım (özet)", expanded=False):
+                            st.dataframe(summary_df.to_pandas(), use_container_width=True, hide_index=True)
 
-                                        # Altair Grafiği
-                                        ch = (alt.Chart(grp).mark_bar()
-                                              .encode(
-                                            x=alt.X("target_rate:Q", title=f"'{sel_target}=1' Oranı",
-                                                    scale=alt.Scale(domain=[0, 1])),
-                                            y=alt.Y(f"{sel_cat_feat}:N", sort="-x", title=sel_cat_feat),
-                                            tooltip=[sel_cat_feat, "n:Q", alt.Tooltip("target_rate:Q", format=".2%")]
-                                        ).properties(height=max(200, min(500, grp.shape[0] * 25))))  # Dinamik yükseklik
+                        st.rerun()
 
-                                        st.altair_chart(ch, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"❌ Yüzdelik aralığı temizleme hatası: {e}")
 
-                                    else:
-                                        st.info("Bu görev için uygun kategorik özellik bulunamadı.")
+        # ----------------------------------------------------
+        # 🧩 Rare Analysis Kartı
+        # ----------------------------------------------------
+        with st.container(border=True):
+            st.markdown("## 🧩 Rare Analysis — Az Görülen Değerleri Birleştir")
 
-                                # ----- Regression Görev Görseli -----
-                                elif task_type == "regression":
-                                    st.markdown("##### Sayısal Değişkenler vs. Hedef")
-                                    # Rapordaki en güçlü ilişkili sayısal kolonu al
-                                    num_cols = results_df[
-                                        (results_df["feature_type"] == "numeric") &
-                                        (results_df["effect_abs"].notna())
-                                        ]["feature"].tolist()
+            # Aday kolonlar: string/categorical (opsiyonel: sayısal düşük kardinalite)
+            candidate_cols = []
+            for c, dt in zip(df.columns, df.dtypes):
+                if dt in (pl.Utf8, pl.Categorical):
+                    candidate_cols.append(c)
+                # Düşük kardinaliteli sayısallar da istenirse aç:
+                # elif df.select(pl.col(c).n_unique()).item() <= 30:
+                #     candidate_cols.append(c)
 
-                                    if num_cols:
-                                        sel_num_feat = st.selectbox("Görselleştirmek için bir özellik seçin", num_cols)
+            if not candidate_cols:
+                st.info(
+                    "Uygun (kategorik) kolon bulunamadı. Gerekirse 'cast_to_utf8' ile sayısalları da dönüştürebilirsiniz.")
+            else:
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    sel_cols = st.multiselect(
+                        "İşlenecek kolon(lar)",
+                        options=candidate_cols,
+                        help="Az görülen kategoriler seçtiğiniz kurala göre 'Diğer' altında toplanır."
+                    )
+                with c2:
+                    other_label = st.text_input("Birleştirme etiketi", value="Diğer")
 
-                                        # Polars'tan Pandas'a
-                                        pdf_sample = df.select([sel_num_feat, sel_target]).sample(
-                                            n=min(5000, df.height)).to_pandas()
+                rule = st.radio(
+                    "Kural",
+                    options=["Min Adet", "Min Yüzde (%)", "Top-K (ilk K kalsın)"],
+                    horizontal=True,
+                    index=0
+                )
 
-                                        # Altair Scatter Plot
-                                        ch = (alt.Chart(pdf_sample).mark_circle(opacity=0.5)
-                                              .encode(
-                                            x=alt.X(sel_num_feat, title=sel_num_feat),
-                                            y=alt.Y(sel_target, title=sel_target),
-                                            tooltip=[sel_num_feat, sel_target]
-                                        ).properties(title=f"{sel_target} vs {sel_num_feat} (5k örneklem)")
-                                              .interactive())
+                min_count = None
+                min_freq = None
+                top_k = None
+                if rule == "Min Adet":
+                    min_count = st.number_input("Alt sınır (adet)", min_value=1, value=10, step=1)
+                elif rule == "Min Yüzde (%)":
+                    pct = st.number_input("Alt sınır (%)", min_value=0.0, max_value=100.0, value=1.0, step=0.1)
+                    min_freq = float(pct) / 100.0
+                else:
+                    top_k = st.number_input("K (ilk K kategori kalsın)", min_value=1, value=10, step=1)
 
-                                        st.altair_chart(
-                                            ch + ch.transform_regression(sel_num_feat, sel_target).mark_line(
-                                                color="red"), use_container_width=True)
-                                    else:
-                                        st.info("Bu görev için uygun sayısal özellik bulunamadı.")
+                cast_to_utf8 = st.checkbox("Gerekirse string'e çevir (önerilir)", value=True,
+                                           help="Tip çakışmalarını önler; sayısal kolonları da güvenle birleştirir.")
 
-                                else:
-                                    st.info(
-                                        f"'{task_type}' görev türü için otomatik görselleştirme henüz tanımlanmadı.")
+                # Önizleme (özet)
+                if sel_cols:
+                    try:
+                        preview_summary = DataUtils.rare_summary(
+                            df, sel_cols, min_count=min_count, min_freq=min_freq, top_k=top_k,
+                            other_label=other_label, cast_to_utf8=cast_to_utf8
+                        )
 
-                            except Exception as e:
-                                st.error(f"Görselleştirme hatası: {e}")
+                        st.caption("Önizleme — kolon bazında kaç kategori 'Diğer' olacak ve kaç satır taşınacak:")
+                        st.dataframe(
+                            preview_summary
+                            .with_columns([
+                                (pl.col("threshold") * 100).round(2).alias("threshold(%)")
+                            ])
+                            .with_columns([
+                                # İnsan-okur hali: min_freq ise threshold(%) kullanılır; aksi durumda threshold aynen
+                                pl.when(pl.col("criterion") == "min_freq").then(
+                                    pl.col("threshold(%)").cast(pl.Utf8) + pl.lit("%"))
+                                .otherwise(pl.col("threshold").cast(pl.Utf8))
+                                .alias("eşik")
+                            ])
+                            .select([
+                                "column", "criterion", "eşik", "unique_total", "unique_keep", "unique_rare",
+                                "rows_keep", "rows_rare", "other_label", "rare_examples"
+                            ])
+                            .rename({
+                                "column": "kolon", "criterion": "kriter", "unique_total": "benzersiz_toplam",
+                                "unique_keep": "benzersiz_kalan", "unique_rare": "benzersiz_birleşen",
+                                "rows_keep": "satır_kalan", "rows_rare": "satır_birleşen",
+                                "other_label": "etiket", "rare_examples": "örnek_rare"
+                            })
+                            .to_pandas(),
+                            use_container_width=True, hide_index=True, height=280
+                        )
+
+                        # Dağılım önizlemesi (uygulanmış sonrası) – sadece görüntü amaçlı
+                        df_preview, _ = DataUtils.rare_collapse(
+                            df, sel_cols, min_count=min_count, min_freq=min_freq, top_k=top_k,
+                            other_label=other_label, cast_to_utf8=cast_to_utf8, return_summary=False
+                        )
+                        with st.expander("Kolon başına yeni dağılım (örnek)", expanded=False):
+                            for c in sel_cols:
+                                vc = DataUtils._value_counts(df_preview, c, cast_to_utf8=False)  # [c, count, freq]
+                                st.markdown(f"**{c}** — ilk 15 kategori")
+                                st.dataframe(
+                                    vc.sort("count", descending=True)
+                                    .with_columns((pl.col("freq") * 100).round(2).alias("freq(%)"))
+                                    .head(15)
+                                    .to_pandas(),
+                                    use_container_width=True, hide_index=True
+                                )
+
+                    except Exception as e:
+                        st.error(f"Önizleme hatası: {e}")
+
+                # Uygula
+                run = st.button(
+                    "🚀 Az Görülenleri Birleştir",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=(len(sel_cols) == 0)
+                )
+                if run:
+                    try:
+                        before_rows = df.height
+                        df_new, _ = DataUtils.rare_collapse(
+                            df, sel_cols, min_count=min_count, min_freq=min_freq, top_k=top_k,
+                            other_label=other_label, cast_to_utf8=cast_to_utf8, return_summary=False
+                        )
+                        after_rows = df_new.height  # satır sayısı değişmez; bilgi amaçlı
+                        st.session_state[DataOverview.SESSION_KEY_DATASETS][name] = df_new
+                        st.session_state["__profile_dirty__"] = True
+
+                        st.success(f"✅ Birleştirme uygulandı. Satır: {before_rows:,} → {after_rows:,}. "
+                                   f"Kolonlar: {', '.join(sel_cols)} | Etiket: '{other_label}'")
+                        st.dataframe(df_new.head(8), use_container_width=True)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Uygulama hatası: {e}")
